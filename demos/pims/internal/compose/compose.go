@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"pims/internal/config"
 	"pims/internal/logging"
@@ -80,15 +81,32 @@ func (k KafkaEnv) validate() error {
 }
 
 // MySQLSecrets are the passwords for the local demo database. They are
-// generated once per workspace and stored with 0600 permissions.
+// generated together with the MySQL data volume and stored with 0600
+// permissions; Down with removeVolumes deletes them so the next database
+// gets fresh ones.
 type MySQLSecrets struct {
 	RootPassword     string `json:"rootPassword"`
 	AppPassword      string `json:"appPassword"`
 	DebeziumPassword string `json:"debeziumPassword"`
+	// Generation identifies this database instance. Debezium state in
+	// Confluent Cloud is keyed by it, so a recreated database starts a
+	// fresh snapshot instead of resuming stale binlog offsets.
+	Generation string `json:"generation"`
 }
 
 // LogValue keeps passwords out of logs.
-func (MySQLSecrets) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
+func (s MySQLSecrets) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("generation", s.Generation), slog.String("passwords", "[REDACTED]"))
+}
+
+func (s MySQLSecrets) validate() error {
+	if s.RootPassword == "" || s.AppPassword == "" || s.DebeziumPassword == "" || s.Generation == "" {
+		return errors.New("mysql secrets file is incomplete; run a full reset (which deletes the MySQL volume) to regenerate it")
+	}
+	return nil
+}
+
+func (p *Project) secretsPath() string { return filepath.Join(p.ws.ComposeDir(), "mysql-secrets.json") }
 
 // Project runs docker compose against the rendered project directory.
 type Project struct {
@@ -106,6 +124,9 @@ func NewProject(ws config.Workspace, log *slog.Logger) *Project {
 // CheckDocker verifies that the docker CLI, the compose plugin and the
 // daemon are all usable, with a hint the UI can show the operator.
 func (p *Project) CheckDocker(ctx context.Context) error {
+	// docker info can hang while Docker Desktop is still starting.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	if _, err := exec.LookPath(p.docker); err != nil {
 		return fmt.Errorf("%w: docker CLI not found on PATH, install Docker Desktop: %v", ErrDockerUnavailable, err)
 	}
@@ -124,12 +145,15 @@ func (p *Project) MySQLSecrets() (MySQLSecrets, error) {
 	if err := p.ws.Ensure(); err != nil {
 		return MySQLSecrets{}, err
 	}
-	path := filepath.Join(p.ws.ComposeDir(), "mysql-secrets.json")
+	path := p.secretsPath()
 	b, err := os.ReadFile(path)
 	if err == nil {
 		var s MySQLSecrets
 		if err := json.Unmarshal(b, &s); err != nil {
 			return MySQLSecrets{}, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if err := s.validate(); err != nil {
+			return MySQLSecrets{}, fmt.Errorf("%s: %w", path, err)
 		}
 		return s, nil
 	}
@@ -137,7 +161,7 @@ func (p *Project) MySQLSecrets() (MySQLSecrets, error) {
 		return MySQLSecrets{}, fmt.Errorf("read mysql secrets: %w", err)
 	}
 
-	s := MySQLSecrets{RootPassword: randomPassword(), AppPassword: randomPassword(), DebeziumPassword: randomPassword()}
+	s := MySQLSecrets{RootPassword: randomHex(16), AppPassword: randomHex(16), DebeziumPassword: randomHex(16), Generation: randomHex(4)}
 	b, err = json.Marshal(s)
 	if err != nil {
 		return MySQLSecrets{}, fmt.Errorf("encode mysql secrets: %w", err)
@@ -183,13 +207,25 @@ func (p *Project) Down(ctx context.Context, removeVolumes bool) error {
 	if err := p.run(ctx, nil, nil, args...); err != nil {
 		return fmt.Errorf("docker compose down: %w", err)
 	}
+	if removeVolumes {
+		// The passwords belong to the deleted volume; the next Up must
+		// generate new ones together with a new generation.
+		if err := os.Remove(p.secretsPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove mysql secrets: %w", err)
+		}
+	}
 	return nil
 }
 
 // Exec runs a command inside a running service with stdin attached and
 // returns its stdout. Secrets should be passed on stdin rather than as
-// arguments so they do not show up in process listings.
-func (p *Project) Exec(ctx context.Context, service string, stdin io.Reader, cmd ...string) ([]byte, error) {
+// arguments so they do not show up in process listings. Any value in
+// redact is scrubbed from the error, since tools such as DuckDB echo the
+// failing statement on stderr.
+func (p *Project) Exec(ctx context.Context, service string, stdin io.Reader, redact []string, cmd ...string) ([]byte, error) {
+	if len(cmd) == 0 {
+		return nil, errors.New("exec: no command given")
+	}
 	var stdout, stderr bytes.Buffer
 	args := append([]string{"exec", "-T", service}, cmd...)
 	c := p.command(ctx, nil, args...)
@@ -197,7 +233,7 @@ func (p *Project) Exec(ctx context.Context, service string, stdin io.Reader, cmd
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 	if err := c.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("exec %s in %s: %w: %s", cmd[0], service, err, strings.TrimSpace(stderr.String()))
+		return stdout.Bytes(), fmt.Errorf("exec %s in %s: %w: %s", cmd[0], service, err, scrub(stderr.String(), redact))
 	}
 	return stdout.Bytes(), nil
 }
@@ -275,10 +311,25 @@ func serviceEnv(k KafkaEnv, s MySQLSecrets) []string {
 	}
 }
 
-// randomPassword returns 32 hex characters. Hex keeps passwords safe to
-// embed in compose interpolation, shell health checks and JAAS strings.
-func randomPassword() string {
-	b := make([]byte, 16)
+// randomHex returns n random bytes as hex. Hex keeps passwords safe to
+// embed in compose interpolation, health checks and JAAS strings.
+func randomHex(n int) string {
+	b := make([]byte, n)
 	_, _ = rand.Read(b) // crypto/rand.Read never returns an error
 	return hex.EncodeToString(b)
+}
+
+// scrub removes secrets from tool output and truncates it for errors.
+func scrub(s string, redact []string) string {
+	for _, r := range redact {
+		if r != "" {
+			s = strings.ReplaceAll(s, r, "[REDACTED]")
+		}
+	}
+	s = strings.TrimSpace(s)
+	const max = 500
+	if len(s) > max {
+		s = s[:max] + "..."
+	}
+	return s
 }

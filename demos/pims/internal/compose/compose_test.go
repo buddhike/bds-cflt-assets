@@ -36,7 +36,7 @@ func TestMySQLSecretsArePersistedAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.RootPassword) != 32 || first.RootPassword == first.AppPassword {
+	if len(first.RootPassword) != 32 || first.RootPassword == first.AppPassword || len(first.Generation) != 8 {
 		t.Fatalf("unexpected generated secrets")
 	}
 	second, err := p.MySQLSecrets()
@@ -101,5 +101,34 @@ func TestComposeConfigInterpolates(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("rendered config missing %q", want)
 		}
+	}
+}
+
+func TestMySQLSecretsRejectsIncompleteFile(t *testing.T) {
+	p := newTestProject(t)
+	if err := p.ws.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.secretsPath(), []byte(`{"rootPassword":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.MySQLSecrets(); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("MySQLSecrets() = %v, want incomplete file error", err)
+	}
+}
+
+func TestScrubRedactsAndTruncates(t *testing.T) {
+	got := scrub("Parser Error near CLIENT_SECRET 'hunter2'\n", []string{"hunter2", ""})
+	if strings.Contains(got, "hunter2") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("scrub() = %q", got)
+	}
+	if n := len(scrub(strings.Repeat("x", 2000), nil)); n > 510 {
+		t.Fatalf("scrub() length = %d, want truncated", n)
+	}
+}
+
+func TestExecRequiresCommand(t *testing.T) {
+	if _, err := newTestProject(t).Exec(context.Background(), ServiceDuckDB, nil, nil); err == nil {
+		t.Fatal("Exec without a command must fail")
 	}
 }
