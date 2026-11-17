@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
 	"time"
 
@@ -37,13 +38,24 @@ const (
 // credentials that have not been entered yet.
 var ErrNoCredentials = errors.New("enter your Confluent Cloud credentials first")
 
+// ErrNotStarted is returned if a bound method is called before Wails has
+// called startup.
+var ErrNotStarted = errors.New("application is still starting")
+
+// shutdownGrace bounds how long closing the window waits for a running
+// setup or teardown to react to cancellation. terraform-exec interrupts
+// terraform and gives it up to a minute to release its state lock.
+const shutdownGrace = 90 * time.Second
+
 // App is the Wails-bound backend. Its exported methods are callable from
 // the frontend.
 type App struct {
-	ctx  context.Context
-	ws   config.Workspace
-	log  *slog.Logger
-	pipe *pipeline.Pipeline
+	ctx    context.Context
+	cancel context.CancelFunc // cancels ctx on shutdown; Wails never does
+	wg     sync.WaitGroup     // background operations and the stats publisher
+	ws     config.Workspace
+	log    *slog.Logger
+	pipe   *pipeline.Pipeline
 
 	mu          sync.Mutex
 	creds       *config.Credentials // in memory only, never persisted
@@ -62,8 +74,22 @@ func NewApp(ws config.Workspace) *App {
 
 // attachLogger sets the logger and builds the pipeline that uses it.
 func (a *App) attachLogger(log *slog.Logger) {
+	a.attachPipeline(log, pipeline.NewDeps(a.ws, log))
+}
+
+func (a *App) attachPipeline(log *slog.Logger, deps pipeline.Deps) {
 	a.log = log
-	a.pipe = pipeline.New(pipeline.NewDeps(a.ws, log), log, a.onStep, a.onLatency)
+	a.pipe = pipeline.New(deps, log, a.onStep, a.onLatency)
+}
+
+// context returns the app context, or ErrNotStarted before startup.
+func (a *App) context() (context.Context, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ctx == nil {
+		return nil, ErrNotStarted
+	}
+	return a.ctx, nil
 }
 
 // onLog receives every slog record via the tee handler.
@@ -86,40 +112,69 @@ func (a *App) onLatency(r latency.Result) {
 	a.emit(eventLatency, r)
 }
 
+// emitter sends events to the frontend; replaced in tests.
+var emitter = runtime.EventsEmit
+
 func (a *App) emit(name string, data any) {
 	a.mu.Lock()
 	ctx := a.ctx
 	a.mu.Unlock()
-	if ctx != nil {
-		runtime.EventsEmit(ctx, name, data)
+	if ctx != nil && ctx.Err() == nil {
+		emitter(ctx, name, data)
 	}
 }
 
 // startup is called by Wails when the window is ready.
 func (a *App) startup(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
 	a.mu.Lock()
-	a.ctx = ctx
+	a.ctx, a.cancel = ctx, cancel
 	a.mu.Unlock()
-	go a.publishSimStats(ctx)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.publishSimStats(ctx)
+	}()
 	a.log.Info("PIMS started", "workspace", a.ws.Root)
 }
 
-// shutdown is called by Wails when the window closes. Background work is
-// stopped but nothing is deleted, so the demo can be resumed.
+// shutdown is called by Wails when the window closes. It cancels any
+// running setup or teardown and waits (bounded) for them to stop, so
+// terraform is interrupted cleanly rather than killed with the process.
+// Nothing is deleted, so the demo can be resumed on the next launch.
 func (a *App) shutdown(context.Context) {
+	a.mu.Lock()
+	cancel := a.cancel
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() { a.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(shutdownGrace):
+		a.log.Warn("Background operation did not stop in time", "grace", shutdownGrace)
+	}
 	a.pipe.Close()
 }
 
-// publishSimStats pushes simulator counters to the UI once a second.
+// publishSimStats pushes simulator counters to the UI once a second, but
+// only when they changed.
 func (a *App) publishSimStats(ctx context.Context) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	var last sim.Stats
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			a.emit(eventSim, a.pipe.SimStats())
+			st := a.pipe.SimStats()
+			if !reflect.DeepEqual(st, last) {
+				a.emit(eventSim, st)
+				last = st
+			}
 		}
 	}
 }
@@ -159,7 +214,7 @@ func (a *App) SetCredentials(c config.Credentials) error {
 	a.mu.Lock()
 	a.creds = &c
 	a.mu.Unlock()
-	a.log.Info("Credentials entered", "credentials", c)
+	a.log.Info("Credentials entered", "aws_region", c.AWSRegion)
 	return nil
 }
 
@@ -201,24 +256,27 @@ func (a *App) GetState() State {
 // Setup starts provisioning and setup in the background. Progress is
 // reported through "step" events and completion through "setup:done".
 func (a *App) Setup() error {
-	return a.background("setup", eventSetupDone, a.pipe.Setup)
+	return a.background("setup", eventSetupDone, a.pipe.Setup, nil)
 }
 
 // Teardown deletes every local and Confluent Cloud resource in the
-// background, reporting completion through "teardown:done".
+// background, reporting completion through "teardown:done". The latency
+// history is cleared only once teardown has succeeded.
 func (a *App) Teardown() error {
-	err := a.background("teardown", eventTeardownDone, a.pipe.Teardown)
-	if err == nil {
-		a.mu.Lock()
+	return a.background("teardown", eventTeardownDone, a.pipe.Teardown, func() {
 		a.points = newRing[latency.Point](maxLatency)
 		a.tableErrors = nil
-		a.mu.Unlock()
-	}
-	return err
+	})
 }
 
-func (a *App) background(name, doneEvent string, fn func(context.Context, config.Credentials) error) error {
+// background runs fn on its own goroutine. onSuccess, if set, runs under
+// a.mu after fn succeeds and before the done event is emitted.
+func (a *App) background(name, doneEvent string, fn func(context.Context, config.Credentials) error, onSuccess func()) error {
 	a.mu.Lock()
+	if a.ctx == nil {
+		a.mu.Unlock()
+		return ErrNotStarted
+	}
 	if a.creds == nil {
 		a.mu.Unlock()
 		return ErrNoCredentials
@@ -232,12 +290,16 @@ func (a *App) background(name, doneEvent string, fn func(context.Context, config
 	a.busy, a.lastError = name, ""
 	a.mu.Unlock()
 
+	a.wg.Add(1)
 	go func() {
+		defer a.wg.Done()
 		err := fn(ctx, creds)
 		a.mu.Lock()
 		a.busy = ""
 		if err != nil {
 			a.lastError = err.Error()
+		} else if onSuccess != nil {
+			onSuccess()
 		}
 		a.mu.Unlock()
 		msg := ""
@@ -252,7 +314,11 @@ func (a *App) background(name, doneEvent string, fn func(context.Context, config
 
 // StartSimulation starts the simulator at rate events per second.
 func (a *App) StartSimulation(rate float64) error {
-	return a.pipe.StartSimulation(a.ctx, rate)
+	ctx, err := a.context()
+	if err != nil {
+		return err
+	}
+	return a.pipe.StartSimulation(ctx, rate)
 }
 
 // SetRate changes the simulator's event rate.
