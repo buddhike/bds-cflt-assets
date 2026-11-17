@@ -98,3 +98,59 @@ func TestOutputsWithoutStateIsNotProvisioned(t *testing.T) {
 		t.Fatalf("Outputs() = %v, want ErrNotProvisioned", err)
 	}
 }
+
+func TestReconcile(t *testing.T) {
+	creds := config.Credentials{AWSRegion: "us-east-1", APIKey: "k", APISecret: "s"}
+
+	tests := []struct {
+		name    string
+		prev    *Outputs
+		opts    ApplyOptions
+		want    ApplyOptions
+		wantErr error
+	}{
+		{name: "fresh workspace", prev: nil, opts: ApplyOptions{}, want: ApplyOptions{}},
+		{name: "tableflow stays on", prev: &Outputs{AWSRegion: "us-east-1", TableflowEnabled: true}, opts: ApplyOptions{}, want: ApplyOptions{EnableTableflow: true}},
+		{name: "tableflow turned on", prev: &Outputs{AWSRegion: "us-east-1"}, opts: ApplyOptions{EnableTableflow: true}, want: ApplyOptions{EnableTableflow: true}},
+		{name: "region change refused", prev: &Outputs{AWSRegion: "eu-west-1"}, opts: ApplyOptions{}, wantErr: ErrRegionChanged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := reconcile(tt.prev, creds, tt.opts)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("reconcile() error = %v, want %v", err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
+				t.Fatalf("reconcile() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessEnvDropsTerraformOverrides(t *testing.T) {
+	t.Setenv("TF_VAR_partitions", "12")
+	t.Setenv("TF_CLI_ARGS_apply", "-target=foo")
+	env := processEnv(config.Credentials{APIKey: "k", APISecret: "s"})
+	for k := range env {
+		if strings.HasPrefix(k, "TF_VAR_") || strings.HasPrefix(k, "TF_CLI_ARGS") {
+			t.Fatalf("env still contains %s", k)
+		}
+	}
+}
+
+func TestWriteConfigRemovesStaleFilesAndWritesLock(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "old.tf")
+	if err := os.WriteFile(stale, []byte("# old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfig(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale file not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".terraform.lock.hcl")); err != nil {
+		t.Fatalf("lock file not written: %v", err)
+	}
+}

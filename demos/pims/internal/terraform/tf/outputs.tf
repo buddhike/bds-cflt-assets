@@ -1,3 +1,7 @@
+output "aws_region" {
+  value = var.aws_region
+}
+
 output "organization_id" {
   value = data.confluent_organization.this.id
 }
