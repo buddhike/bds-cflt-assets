@@ -3,10 +3,13 @@ module pims
 go 1.26.0
 
 require (
+	github.com/brianvoe/gofakeit/v7 v7.18.7
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/hashicorp/go-version v1.9.0
 	github.com/hashicorp/hc-install v0.10.0
 	github.com/hashicorp/terraform-exec v0.26.0
 	github.com/wailsapp/wails/v2 v2.13.0
+	golang.org/x/time v0.16.0
 )
 
 require (
@@ -15,10 +18,8 @@ require (
 	github.com/ProtonMail/go-crypto v1.5.2 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
-	github.com/brianvoe/gofakeit/v7 v7.18.7 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-sql-driver/mysql v1.10.1 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -51,7 +52,6 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/time v0.16.0 // indirect
 )
 
 // replace github.com/wailsapp/wails/v2 v2.13.0 => /Users/buddhike/go/pkg/mod
