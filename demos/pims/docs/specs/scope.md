@@ -13,6 +13,32 @@ This is a demo app to showcase how to use Confluent Cloud (CC) Tableflow and Deb
 - DuckDB for querying replicated data from Iceberg table
 
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Local[Docker Compose]
+        MySQL[(MySQL)]
+        DBZ[Debezium connector]
+        DuckDB[DuckDB]
+    end
+    subgraph CC[Confluent Cloud]
+        Topics[Kafka topics<br/>patients, visits, appointments<br/>cleanup.policy=compact]
+        TF[Tableflow]
+        Iceberg[(Iceberg tables<br/>managed storage)]
+    end
+    App[PIMS Wails app]
+
+    App -- provisions via Terraform --> CC
+    App -- composes and installs schema --> Local
+    App -- simulates events --> MySQL
+    MySQL -- binlog --> DBZ
+    DBZ -- CDC records --> Topics
+    Topics --> TF --> Iceberg
+    DuckDB -- queries --> Iceberg
+    DuckDB -- latency results --> App
+```
+
 ## Application
 PIMS is a Wails Go app to:
 - Fully automate the setup of each component
