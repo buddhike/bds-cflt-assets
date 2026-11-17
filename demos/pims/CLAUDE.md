@@ -2,33 +2,58 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project status
-
-PIMS (Patient Information Management System) is **spec-only so far**. The repo currently contains just `docs/specs/scope.md`, which is the source of truth for intended behavior. There is no code, build tooling, test suite, or git history yet, so there are no build/lint/test commands to document. Once the Wails app is scaffolded, add the real commands here (including how to run a single Go test) and replace the "Planned architecture" section with what was actually built.
-
 ## What this is
 
-A demo app that showcases Confluent Cloud (CC) **Tableflow** with a **Debezium** CDC connector, materializing MySQL tables (patients, visits, appointments) as Iceberg tables. The app is a **Wails (Go) desktop app** that does three things:
+PIMS (Patient Information Management System) is a demo that showcases Confluent Cloud (CC) **Tableflow** with a **Debezium** CDC connector, materializing MySQL tables (patients, visits, appointments) as Iceberg tables. It is a **Wails v2 (Go + React/TypeScript) desktop app** that:
 
 1. Fully automates setup of every infrastructure component.
 2. Simulates realistic patient registrations, visits and appointments.
 3. Visualizes end-to-end replication latency.
 
-## Planned architecture
+`docs/specs/scope.md` is the source of truth for intended behavior. `README.md` has the operator-facing overview.
 
-Data path: `MySQL → Debezium connector → CC Kafka topics → Tableflow (Iceberg) → DuckDB query`
+## Commands
 
-- **Cloud side (Terraform):** CC environment, Standard Kafka cluster, and one topic each for patients, visits and appointments. Tableflow uses Confluent managed storage.
-- **Local side (Docker Compose):** MySQL, the Debezium connector, and DuckDB.
-- **Wails app:** orchestrates both sides, then runs the simulator and the latency view.
+```sh
+wails dev                                   # run the app with live reload
+wails build                                 # build/bin/pims.app
+go vet ./... && go test -race ./...          # all Go unit tests
+go test -run TestSimulationInvariants ./internal/sim   # a single Go test
+cd frontend && npx tsc --noEmit             # type-check the UI
+wails generate module                       # regenerate frontend/wailsjs after changing bound Go methods/types
+```
 
-Setup ordering matters: Terraform and Docker Compose come up first, and only then is the schema installed in MySQL.
+Opt-in integration tests (skipped by default):
+- `PIMS_INTEGRATION=1 go test ./internal/terraform` downloads terraform and the Confluent provider and runs `terraform validate`.
+- `PIMS_TEST_MYSQL_ROOT_PASSWORD=… PIMS_TEST_MYSQL_PORT=… go test ./internal/schema ./internal/sim` run against a real MySQL 8.4 (see README for the `docker run` line).
+- Compose and DuckDB tests run automatically when Docker and the `pims-duckdb` image are available.
 
-## Constraints from the spec
+## Architecture
 
-- **Topic cleanup policy must be `compact`.** Tableflow with Debezium input requires it.
-- **Embed Terraform via the `terraform-exec` Go library** so operators never install Terraform themselves. Docker is the only stated prerequisite.
-- On launch, the app prompts for the AWS region and a CC API key and secret, used to provision the cloud resources.
-- **Every table needs create/update timestamp columns.** End-to-end latency is measured from them.
-- **Simulation must be realistic**, with operator-controlled event rate (events/sec). Example invariant: a patient cannot have more than one appointment on the same day. Enforce domain rules like this in the simulator, not just in the schema.
-- **Latency visualization:** query the latest records with DuckDB, compare them with the timestamp of the source S3 file backing the Iceberg table, and plot the gap as a line graph.
+Data path: `MySQL → Debezium (Kafka Connect, local) → CC Kafka topics (Avro + Schema Registry) → Tableflow (Iceberg, managed storage) → DuckDB`
+
+- `main.go` / `app.go`: Wails entrypoint. `App` methods are bound to the frontend; progress reaches the UI as events (`log`, `step`, `latency`, `sim`, `setup:done`, `teardown:done`). CC credentials are held in memory only.
+- `internal/pipeline`: orchestrates the ordered setup steps and teardown, and owns the simulator and latency monitor. Dependencies are injected as `Deps` functions (`wire.go` holds the real ones) so ordering is unit-tested with fakes.
+- `internal/terraform`: embedded `tf/*.tf` plus `.terraform.lock.hcl`, run via `terraform-exec`. The binary comes from `hc-install`.
+- `internal/compose`: embedded compose project (MySQL 8.4, cp-kafka-connect + Debezium MySQL plugin, DuckDB CLI), rendered into the workspace and driven by the `docker compose` CLI.
+- `internal/schema`, `internal/connector`, `internal/sim`, `internal/latency`: MySQL schema, Connect and Schema Registry clients, clinic simulator, DuckDB latency queries.
+- `internal/config`, `internal/logging`, `internal/retry`: shared foundations. Use `retry.Do` with `retry.Permanent` for non-retryable errors, and log only through slog with sentence-case messages.
+
+## Invariants to preserve
+
+- **Setup ordering**: provision CC (phase 1) → compose up → install schema → register Debezium → start simulator → wait for `<topic>-value` subjects → enable Tableflow (phase 2) → start the latency monitor. Tableflow can't be enabled before the schemas exist, and Debezium only registers a schema with a topic's first record.
+- **Topics must be `cleanup.policy=compact`** and every table needs a primary key. Tableflow's native Debezium support (Early Access) requires both. Don't add a Flink unwrap layer.
+- **Tableflow is sticky**: once enabled, `terraform.Apply` keeps it on. Changing the AWS region on existing state is refused (`ErrRegionChanged`).
+- **Debezium state is scoped to a MySQL "generation"** (`compose.MySQLSecrets.Generation`). Recreating the MySQL volume yields a new connector name and schema-history topic, so stale CC offsets are never reused.
+- **Secrets**:
+  - CC credentials go to terraform only via process env.
+  - Connector configs use `${env:…}` (Connect env config provider).
+  - The DuckDB script goes on stdin, and `compose.Exec` scrubs stderr.
+  - Credential types redact themselves in `String`/`LogValue`/`MarshalJSON`.
+- **Timestamps**: `created_at`/`updated_at` are `DATETIME(3)` maintained by MySQL in UTC, and they are the latency reference. Business times (`scheduled_at`, `check_in_at`) come from the simulator's clinic clock.
+- **Simulator domain rules are enforced in `internal/sim/model.go`** before writing: one appointment per patient per day, no overlapping provider bookings, visits only for due appointments, one visit per patient at a time. Unique keys in `schema.sql` are only a backstop. The model is mutated only on the run goroutine, under `Simulator.mu`.
+
+## Conventions
+
+- Commit messages follow `.claude/skills/git-commit-message.md`; use the Go package name as the scope (`cli` for `main.go`/`app.go`).
+- Review Go changes with `.claude/agents/go-code-reviewer.md`.
