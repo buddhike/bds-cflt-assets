@@ -15,6 +15,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.5.2 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
+	github.com/brianvoe/gofakeit/v7 v7.18.7 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-sql-driver/mysql v1.10.1 // indirect
@@ -50,6 +51,7 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 )
 
 // replace github.com/wailsapp/wails/v2 v2.13.0 => /Users/buddhike/go/pkg/mod
