@@ -114,33 +114,43 @@ func New(store Store, log *slog.Logger, seed uint64) *Simulator {
 // Start resumes from the database state and generates events at rate
 // events per second until Stop is called or ctx is cancelled.
 func (s *Simulator) Start(ctx context.Context, eventsPerSec float64) error {
+	// The run context exists before loading so a Stop issued while Load is
+	// in progress cancels it rather than racing with the goroutine start.
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
 	s.mu.Lock()
 	if s.started {
 		s.mu.Unlock()
+		stop()
 		return ErrAlreadyRunning
 	}
 	s.started = true
+	s.cancel = stop
+	s.done = done
+	// Counters are per run; only the rate carries over.
+	s.stats = Stats{Rate: s.stats.Rate, ByKind: make(map[Kind]int64)}
+	s.m = nil
 	s.mu.Unlock()
 
 	m := newModel(time.Now().UTC())
-	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	lctx, cancel := context.WithTimeout(runCtx, 30*time.Second)
 	snap, err := s.store.Load(lctx, m.now)
 	cancel()
 	if err != nil {
 		s.mu.Lock()
 		s.started = false
+		s.cancel = nil
+		s.stats.LastError = err.Error()
 		s.mu.Unlock()
+		stop()
+		close(done)
 		return fmt.Errorf("load simulation state: %w", err)
 	}
 	m.restore(snap)
 
-	runCtx, stop := context.WithCancel(ctx)
 	s.mu.Lock()
 	s.m = m
-	s.cancel = stop
-	s.done = make(chan struct{})
 	s.stats.Running = true
-	s.stats.LastError = ""
 	s.mu.Unlock()
 	s.SetRate(eventsPerSec)
 
@@ -245,8 +255,10 @@ func (s *Simulator) step(ctx context.Context) (Kind, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.opTO)
 	defer cancel()
 
-	// The model is only touched from the run goroutine; the lock guards
-	// against concurrent Stats readers.
+	// Concurrency contract: only the run goroutine mutates the model, and
+	// always while holding mu. Event handlers may read the model without the
+	// lock because no other goroutine writes it; Stats reads it under mu.
+	// Any new writer outside the run goroutine must take mu.
 	s.mu.Lock()
 	m := s.m
 	m.tick(stepPerEvent)
@@ -321,7 +333,11 @@ func (s *Simulator) choose(m *model) Kind {
 }
 
 func (s *Simulator) register(ctx context.Context, m *model) error {
-	p := s.gen.patient(m.now)
+	s.mu.Lock()
+	m.mrnSeq++
+	seq := m.mrnSeq
+	s.mu.Unlock()
+	p := s.gen.patient(m.now, seq)
 	id, err := s.store.InsertPatient(ctx, p)
 	if err != nil {
 		return fmt.Errorf("register patient: %w", err)
@@ -346,8 +362,9 @@ func (s *Simulator) bookAppointment(ctx context.Context, m *model) error {
 	for range 10 {
 		pid := m.patients[s.gen.rng.IntN(len(m.patients))]
 		prov := providers[s.gen.rng.IntN(len(providers))]
-		at := s.candidateSlot(m.now)
-		if !m.canBook(pid, prov.Name, at) {
+		dur := s.gen.appointmentDuration(prov.Department)
+		at := s.candidateSlot(m.now, dur)
+		if !m.canBook(pid, prov.Name, at, dur) {
 			continue
 		}
 		a := Appointment{
@@ -355,7 +372,7 @@ func (s *Simulator) bookAppointment(ctx context.Context, m *model) error {
 			Provider:    prov.Name,
 			Department:  prov.Department,
 			ScheduledAt: at,
-			Duration:    s.gen.appointmentDuration(prov.Department),
+			Duration:    dur,
 			Reason:      s.gen.pick(appointmentReasons[prov.Department]),
 		}
 		id, err := s.store.InsertAppointment(ctx, a)
@@ -373,12 +390,25 @@ func (s *Simulator) bookAppointment(ctx context.Context, m *model) error {
 }
 
 // candidateSlot picks a slot between later today and two weeks out,
-// favouring the next few days as real clinics do.
-func (s *Simulator) candidateSlot(now time.Time) time.Time {
+// favouring the next few days as real clinics do. The slot leaves room for
+// the appointment to finish by closing time.
+func (s *Simulator) candidateSlot(now time.Time, dur time.Duration) time.Time {
 	days := min(int(s.gen.rng.ExpFloat64()*3), 14)
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, days)
-	slots := int((closeHour - openHour) * time.Hour / slot)
-	return day.Add(openHour*time.Hour + time.Duration(s.gen.rng.IntN(slots))*slot)
+	slots := int(((closeHour-openHour)*time.Hour - dur) / slot)
+	return day.Add(openHour*time.Hour + time.Duration(s.gen.rng.IntN(slots+1))*slot)
+}
+
+// forget drops an appointment from the model after a conflict: the
+// database already holds a newer state for it (for example a check-in
+// that committed before its context timed out), so retrying would only
+// conflict again and block later appointments.
+func (s *Simulator) forget(m *model, id int64, err error) {
+	if errors.Is(err, ErrConflict) {
+		s.mu.Lock()
+		m.removeScheduled(id)
+		s.mu.Unlock()
+	}
 }
 
 func (s *Simulator) cancelAppointment(ctx context.Context, m *model) error {
@@ -388,6 +418,7 @@ func (s *Simulator) cancelAppointment(ctx context.Context, m *model) error {
 	}
 	a := m.scheduled[i]
 	if err := s.store.SetAppointmentStatus(ctx, a.ID, StatusCancelled); err != nil {
+		s.forget(m, a.ID, err)
 		return fmt.Errorf("cancel appointment %d: %w", a.ID, err)
 	}
 	// The day and slot stay taken: the cancelled row still holds them in
@@ -405,6 +436,7 @@ func (s *Simulator) noShow(ctx context.Context, m *model) error {
 	}
 	a := m.scheduled[i]
 	if err := s.store.SetAppointmentStatus(ctx, a.ID, StatusNoShow); err != nil {
+		s.forget(m, a.ID, err)
 		return fmt.Errorf("mark appointment %d no-show: %w", a.ID, err)
 	}
 	s.mu.Lock()
@@ -432,6 +464,7 @@ func (s *Simulator) checkIn(ctx context.Context, m *model) error {
 	}
 	id, err := s.store.CheckIn(ctx, v)
 	if err != nil {
+		s.forget(m, a.ID, err)
 		return fmt.Errorf("check in appointment %d: %w", a.ID, err)
 	}
 	v.ID = id

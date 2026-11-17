@@ -79,6 +79,8 @@ type Snapshot struct {
 	// Scheduled holds the appointments still awaiting check-in.
 	Scheduled  []Appointment
 	OpenVisits []Visit
+	// MaxMRN is the highest sequential medical record number in use.
+	MaxMRN int64
 	// Latest is the most recent business time recorded, so the simulated
 	// clock never runs backwards across restarts.
 	Latest time.Time
@@ -102,6 +104,8 @@ type model struct {
 	// busy marks patients currently in the clinic, who cannot check in to
 	// a second visit at the same time.
 	busy map[int64]bool
+	// mrnSeq is the last medical record number allocated.
+	mrnSeq int64
 
 	lastPrunedDay string
 }
@@ -122,6 +126,7 @@ func (m *model) restore(s Snapshot) {
 		m.now = nextOpen(s.Latest)
 	}
 	m.patients = append(m.patients[:0], s.Patients...)
+	m.mrnSeq = max(m.mrnSeq, s.MaxMRN)
 	for _, a := range s.Booked {
 		m.book(a)
 	}
@@ -167,18 +172,28 @@ func (m *model) pruneBefore(day string) {
 	}
 }
 
-// canBook reports whether the appointment satisfies the domain rules.
-func (m *model) canBook(patientID int64, prov string, at time.Time) bool {
-	if !at.After(m.now) || !isOpen(at) {
+// canBook reports whether the appointment satisfies the domain rules: it
+// is in the future, within clinic hours (start and finish), the patient
+// has no other appointment that day, and the provider is free for every
+// slot the appointment covers.
+func (m *model) canBook(patientID int64, prov string, at time.Time, dur time.Duration) bool {
+	end := at.Add(dur)
+	if !at.After(m.now) || !isOpen(at) || dateKey(end) != dateKey(at) || end.Hour()*60+end.Minute() > closeHour*60 {
 		return false
 	}
 	if m.patientDays[patientID][dateKey(at)] {
 		return false
 	}
-	return !m.providerSlots[prov][at]
+	for t := at; t.Before(end); t = t.Add(slot) {
+		if m.providerSlots[prov][t] {
+			return false
+		}
+	}
+	return true
 }
 
-// book records an appointment against the per-day and per-slot rules.
+// book records an appointment against the per-day and per-slot rules,
+// marking every slot it covers so longer appointments cannot overlap.
 func (m *model) book(a Appointment) {
 	days := m.patientDays[a.PatientID]
 	if days == nil {
@@ -191,7 +206,10 @@ func (m *model) book(a Appointment) {
 		slots = make(map[time.Time]bool)
 		m.providerSlots[a.Provider] = slots
 	}
-	slots[a.ScheduledAt] = true
+	dur := max(a.Duration, slot)
+	for t := a.ScheduledAt; t.Before(a.ScheduledAt.Add(dur)); t = t.Add(slot) {
+		slots[t] = true
+	}
 }
 
 func (m *model) insertScheduled(a Appointment) {

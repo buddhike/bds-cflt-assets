@@ -64,8 +64,10 @@ func (g *generator) pick(xs []string) string { return xs[g.rng.IntN(len(xs))] }
 
 func (g *generator) chance(p float64) bool { return g.rng.Float64() < p }
 
-// patient generates a new patient registered at time now.
-func (g *generator) patient(now time.Time) Patient {
+// patient generates a new patient registered at time now. MRNs are
+// allocated sequentially, as hospital systems do, so they never collide
+// when a run resumes with the same seed.
+func (g *generator) patient(now time.Time, seq int64) Patient {
 	sex := "F"
 	switch r := g.rng.Float64(); {
 	case r < 0.49:
@@ -77,7 +79,7 @@ func (g *generator) patient(now time.Time) Patient {
 	last := g.fake.LastName()
 	addr := g.fake.Address()
 	return Patient{
-		MRN:         fmt.Sprintf("M%09d", g.rng.Int64N(1_000_000_000)),
+		MRN:         fmt.Sprintf("M%09d", seq),
 		FirstName:   first,
 		LastName:    last,
 		DateOfBirth: g.dateOfBirth(now),

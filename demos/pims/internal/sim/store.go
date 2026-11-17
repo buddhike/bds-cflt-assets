@@ -24,7 +24,7 @@ func NewMySQLStore(db *sql.DB) *MySQLStore { return &MySQLStore{db: db} }
 func classify(err error) error {
 	var me *mysql.MySQLError
 	if errors.As(err, &me) && me.Number == mysqlDuplicateEntry {
-		return fmt.Errorf("%w: %v", ErrConflict, err)
+		return fmt.Errorf("%w: %w", ErrConflict, err)
 	}
 	return err
 }
@@ -64,10 +64,27 @@ func (s *MySQLStore) InsertAppointment(ctx context.Context, a Appointment) (int6
 	return res.LastInsertId()
 }
 
-// SetAppointmentStatus implements Store.
+// SetAppointmentStatus implements Store. Only SCHEDULED appointments can
+// be cancelled or marked as no-shows; anything else means the model is
+// stale and is reported as a conflict.
 func (s *MySQLStore) SetAppointmentStatus(ctx context.Context, id int64, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE appointments SET status = ? WHERE id = ?`, status, id)
-	return classify(err)
+	res, err := s.db.ExecContext(ctx, `UPDATE appointments SET status = ? WHERE id = ? AND status = ?`, status, id, StatusScheduled)
+	if err != nil {
+		return classify(err)
+	}
+	return requireRow(res, "appointment", id)
+}
+
+// requireRow turns "no rows changed" into ErrConflict.
+func requireRow(res sql.Result, what string, id int64) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s %d was not in the expected state", ErrConflict, what, id)
+	}
+	return nil
 }
 
 // CheckIn implements Store.
@@ -85,9 +102,13 @@ func (s *MySQLStore) CheckIn(ctx context.Context, v Visit) (int64, error) {
 			return err
 		}
 		if v.AppointmentID != nil {
-			_, err = tx.ExecContext(ctx, `UPDATE appointments SET status = ? WHERE id = ?`, StatusCheckedIn, *v.AppointmentID)
+			res, err := tx.ExecContext(ctx, `UPDATE appointments SET status = ? WHERE id = ? AND status = ?`, StatusCheckedIn, *v.AppointmentID, StatusScheduled)
+			if err != nil {
+				return err
+			}
+			return requireRow(res, "appointment", *v.AppointmentID)
 		}
-		return err
+		return nil
 	})
 	return id, err
 }
@@ -95,10 +116,13 @@ func (s *MySQLStore) CheckIn(ctx context.Context, v Visit) (int64, error) {
 // CompleteVisit implements Store.
 func (s *MySQLStore) CompleteVisit(ctx context.Context, v Visit, checkOut time.Time, diagnosis string) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-			UPDATE visits SET status = 'COMPLETED', check_out_at = ?, diagnosis_code = ? WHERE id = ?`,
+		res, err := tx.ExecContext(ctx, `
+			UPDATE visits SET status = 'COMPLETED', check_out_at = ?, diagnosis_code = ? WHERE id = ? AND status = 'IN_PROGRESS'`,
 			checkOut, diagnosis, v.ID)
 		if err != nil {
+			return err
+		}
+		if err := requireRow(res, "visit", v.ID); err != nil {
 			return err
 		}
 		if v.AppointmentID != nil {
@@ -165,9 +189,6 @@ func (s *MySQLStore) Load(ctx context.Context, from time.Time) (Snapshot, error)
 		if status == StatusScheduled {
 			snap.Scheduled = append(snap.Scheduled, a)
 		}
-		if a.ScheduledAt.After(snap.Latest) && status != StatusScheduled {
-			snap.Latest = a.ScheduledAt
-		}
 	}
 	if err := closeRows(rows); err != nil {
 		return snap, fmt.Errorf("load appointments: %w", err)
@@ -198,6 +219,12 @@ func (s *MySQLStore) Load(ctx context.Context, from time.Time) (Snapshot, error)
 	if err := closeRows(rows); err != nil {
 		return snap, fmt.Errorf("load visits: %w", err)
 	}
+
+	var maxMRN sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(CAST(SUBSTRING(mrn, 2) AS UNSIGNED)) FROM patients WHERE mrn REGEXP '^M[0-9]+$'`).Scan(&maxMRN); err != nil {
+		return snap, fmt.Errorf("load latest mrn: %w", err)
+	}
+	snap.MaxMRN = maxMRN.Int64
 
 	var latest sql.NullTime
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(COALESCE(check_out_at, check_in_at)) FROM visits`).Scan(&latest); err != nil {
