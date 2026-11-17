@@ -1,28 +1,99 @@
-import {useState} from 'react';
-import logo from './assets/images/logo-universal.png';
-import './App.css';
-import {Greet} from "../wailsjs/go/main/App";
+import {useCallback, useEffect, useState} from 'react';
+import {api, AppState, errorText, LatencyPoint, LogEntry, Step, TableError} from './api';
+import {CredentialsForm} from './components/CredentialsForm';
+import {SetupSteps} from './components/SetupSteps';
+import {SimulationPanel} from './components/SimulationPanel';
+import {LatencyChart} from './components/LatencyChart';
+import {ActivityLog} from './components/ActivityLog';
+import {events} from './api';
 
-function App() {
-    const [resultText, setResultText] = useState("Please enter your name below 👇");
-    const [name, setName] = useState('');
-    const updateName = (e: any) => setName(e.target.value);
-    const updateResultText = (result: string) => setResultText(result);
+const MAX_LOGS = 500;
+const MAX_POINTS = 5000;
 
-    function greet() {
-        Greet(name).then(updateResultText);
+export default function App() {
+  const [state, setState] = useState<AppState | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [points, setPoints] = useState<LatencyPoint[]>([]);
+  const [tableErrors, setTableErrors] = useState<TableError[]>([]);
+  const [actionError, setActionError] = useState('');
+  const [confirmTeardown, setConfirmTeardown] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const s = await api.getState();
+    setState(s);
+    setLogs(s.logs ?? []);
+    setPoints(s.latency ?? []);
+    setTableErrors(s.tableErrors ?? []);
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const offs = [
+      events.onLog((e) => setLogs((l) => [...l.slice(-(MAX_LOGS - 1)), e])),
+      events.onStep((step: Step) => setState((s) => s && {...s, steps: s.steps.map((x) => (x.id === step.id ? step : x))})),
+      events.onSim((sim) => setState((s) => s && {...s, sim})),
+      events.onLatency((r) => {
+        if (r.points?.length) setPoints((p) => [...p, ...r.points!].slice(-MAX_POINTS));
+        setTableErrors(r.errors ?? []);
+      }),
+      events.onSetupDone((r) => { setActionError(r.error); refresh(); }),
+      events.onTeardownDone((r) => { setActionError(r.error); refresh(); }),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [refresh]);
+
+  async function run(fn: () => Promise<void>) {
+    setActionError('');
+    try {
+      await fn();
+      await refresh();
+    } catch (err) {
+      setActionError(errorText(err));
     }
+  }
 
-    return (
-        <div id="App">
-            <img src={logo} id="logo" alt="logo"/>
-            <div id="result" className="result">{resultText}</div>
-            <div id="input" className="input-box">
-                <input id="name" className="input" onChange={updateName} autoComplete="off" name="input" type="text"/>
-                <button className="btn" onClick={greet}>Greet</button>
-            </div>
+  if (!state) return <main className="gate"><p>Loading…</p></main>;
+  if (!state.hasCredentials) return <CredentialsForm onSaved={refresh}/>;
+
+  const busy = state.busy;
+  const stepsStarted = state.steps.some((s) => s.status !== 'pending');
+  const schemaReady = state.steps.find((s) => s.id === 'schema')?.status === 'done' || state.sim.running || state.sim.events > 0;
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <div>
+          <h1>PIMS</h1>
+          <span className="sub">Debezium → Confluent Cloud → Tableflow (Iceberg) → DuckDB · {state.awsRegion}</span>
         </div>
-    )
-}
+        <div className="actions">
+          {busy && <span className="pill pill-on">● {busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
+          <button className="primary" disabled={!!busy} onClick={() => run(api.setup)}>
+            {stepsStarted ? 'Re-run setup' : 'Set up demo'}
+          </button>
+          {confirmTeardown ? (
+            <span className="confirm">
+              Delete all cloud and local resources?
+              <button className="danger" onClick={() => { setConfirmTeardown(false); run(api.teardown); }}>Delete everything</button>
+              <button onClick={() => setConfirmTeardown(false)}>Cancel</button>
+            </span>
+          ) : (
+            <button disabled={!!busy} onClick={() => setConfirmTeardown(true)}>Tear down</button>
+          )}
+        </div>
+      </header>
 
-export default App
+      {(actionError || state.lastError) && <p className="banner error" role="alert">{actionError || state.lastError}</p>}
+
+      <div className="grid">
+        <section className="card">
+          <header className="card-head"><h2>Setup</h2></header>
+          <SetupSteps steps={state.steps}/>
+        </section>
+        <SimulationPanel sim={state.sim} limits={state.limits} ready={schemaReady}/>
+        <LatencyChart points={points} errors={tableErrors}/>
+        <ActivityLog logs={logs}/>
+      </div>
+    </div>
+  );
+}
