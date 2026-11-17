@@ -62,8 +62,8 @@ func TestScriptQuotesSecretAndHidesSetupOutput(t *testing.T) {
 	if strings.Index(s, ".mode trash") > strings.Index(s, "CREATE SECRET") || strings.Index(s, ".mode json") < strings.Index(s, "ATTACH") {
 		t.Fatalf("setup must run in trash mode before json output:\n%s", s)
 	}
-	if !strings.Contains(s, `iceberg_snapshots(tableflow."lkc-abc123"."patients")`) {
-		t.Fatalf("snapshot query missing:\n%s", s)
+	if !strings.Contains(s, `iceberg_snapshots(tableflow."lkc-abc123"."patients") WHERE timestamp_ms::TIMESTAMPTZ >= r.rec`) {
+		t.Fatalf("snapshot query must pick the commit that published the newest record:\n%s", s)
 	}
 }
 
@@ -115,10 +115,10 @@ func (s *seqQuerier) Query(context.Context) (Result, error) {
 
 func TestMonitorReportsEachCommitOnce(t *testing.T) {
 	t0 := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	p := func(commit time.Time) Point { return Point{Table: "patients", CommittedAt: commit} }
+	p := func(rec time.Time) Point { return Point{Table: "patients", RecordAt: rec, CommittedAt: rec.Add(time.Minute)} }
 	q := &seqQuerier{results: []Result{
 		{Points: []Point{p(t0)}},
-		{Points: []Point{p(t0)}}, // same snapshot: not reported again
+		{Points: []Point{p(t0)}}, // no new record (e.g. compaction commit): not reported
 		{Points: []Point{p(t0.Add(time.Minute))}},
 	}}
 	m := NewMonitor(q, time.Millisecond, slog.New(slog.DiscardHandler))
@@ -149,9 +149,9 @@ func TestScriptRunsInDuckDB(t *testing.T) {
 		".mode trash",
 		"SET TimeZone = 'UTC';",
 		"CREATE TABLE patients AS SELECT TIMESTAMP '2030-01-01 10:00:00.500' AS updated_at;",
-		"CREATE TABLE snaps AS SELECT TIMESTAMP '2030-01-01 10:01:00' AS timestamp_ms;",
+		"CREATE TABLE snaps AS SELECT * FROM (VALUES (TIMESTAMP '2030-01-01 09:00:00'), (TIMESTAMP '2030-01-01 10:01:00'), (TIMESTAMP '2030-01-01 10:30:00')) v(timestamp_ms);",
 		".mode json",
-		"SELECT 'patients' AS table_name, (SELECT epoch_ms(max(updated_at)::TIMESTAMPTZ) FROM patients) AS record_ms, (SELECT epoch_ms(max(timestamp_ms)::TIMESTAMPTZ) FROM snaps) AS committed_ms;",
+		"WITH r AS (SELECT max(updated_at)::TIMESTAMPTZ AS rec FROM patients) SELECT 'patients' AS table_name, epoch_ms(r.rec) AS record_ms, (SELECT epoch_ms(min(timestamp_ms)::TIMESTAMPTZ) FROM snaps WHERE timestamp_ms::TIMESTAMPTZ >= r.rec) AS committed_ms FROM r;",
 	}, "\n")
 	cmd := exec.Command("docker", "run", "--rm", "-i", "pims-duckdb", "duckdb", "-batch")
 	cmd.Stdin = strings.NewReader(script)

@@ -129,12 +129,17 @@ func (d *DuckDB) Script() string {
 	b.WriteString(".mode json\n")
 	for _, t := range d.tables {
 		ref := fmt.Sprintf(`tableflow."%s"."%s"`, d.catalog.Namespace, t)
-		// Casting to TIMESTAMPTZ accepts timestamp, timestamptz or ISO
-		// strings, whichever Tableflow produced for the Debezium column.
-		fmt.Fprintf(&b, "SELECT '%s' AS table_name, "+
-			"(SELECT epoch_ms(max(updated_at)::TIMESTAMPTZ) FROM %s) AS record_ms, "+
-			"(SELECT epoch_ms(max(timestamp_ms)::TIMESTAMPTZ) FROM iceberg_snapshots(%s)) AS committed_ms;\n",
-			t, ref, ref)
+		// The commit that published the newest record is the earliest
+		// snapshot committed at or after it was written. Using that rather
+		// than the latest snapshot keeps later compaction or maintenance
+		// commits, and commits landing between the two reads, from
+		// inflating the latency. Casting to TIMESTAMPTZ accepts timestamp,
+		// timestamptz or ISO strings, whichever Tableflow produced.
+		fmt.Fprintf(&b, "WITH r AS (SELECT max(updated_at)::TIMESTAMPTZ AS rec FROM %s) "+
+			"SELECT '%s' AS table_name, epoch_ms(r.rec) AS record_ms, "+
+			"(SELECT epoch_ms(min(timestamp_ms)::TIMESTAMPTZ) FROM iceberg_snapshots(%s) WHERE timestamp_ms::TIMESTAMPTZ >= r.rec) AS committed_ms "+
+			"FROM r;\n",
+			ref, t, ref)
 	}
 	return b.String()
 }
@@ -171,8 +176,12 @@ func (d *DuckDB) Query(ctx context.Context) (Result, error) {
 	seen := map[string]bool{}
 	for _, r := range rows {
 		seen[r.Table] = true
-		if r.RecordMs == nil || r.CommittedMs == nil {
+		if r.RecordMs == nil {
 			res.Errors = append(res.Errors, TableError{Table: r.Table, Error: "table has no data yet"})
+			continue
+		}
+		if r.CommittedMs == nil {
+			res.Errors = append(res.Errors, TableError{Table: r.Table, Error: "newest record is not in a committed snapshot yet"})
 			continue
 		}
 		rec, com := time.UnixMilli(*r.RecordMs).UTC(), time.UnixMilli(*r.CommittedMs).UTC()
@@ -221,13 +230,19 @@ type Monitor struct {
 	q        Querier
 	interval time.Duration
 	log      *slog.Logger
-	// last remembers the latest snapshot seen per table so each Iceberg
-	// commit is reported once.
+	// last remembers the newest record reported per table, so each record
+	// that reaches Iceberg is reported once.
 	last map[string]time.Time
 }
 
+// DefaultInterval is used when NewMonitor is given a non-positive interval.
+const DefaultInterval = 30 * time.Second
+
 // NewMonitor returns a Monitor that polls every interval.
 func NewMonitor(q Querier, interval time.Duration, log *slog.Logger) *Monitor {
+	if interval <= 0 {
+		interval = DefaultInterval
+	}
 	return &Monitor{q: q, interval: interval, log: log.With("component", "latency"), last: map[string]time.Time{}}
 }
 
@@ -255,14 +270,15 @@ func (m *Monitor) Run(ctx context.Context, onResult func(Result)) {
 	}
 }
 
-// fresh keeps only points for snapshots not reported before.
+// fresh keeps only points whose newest record has moved on since the last
+// report, so a snapshot that brought no new data is never plotted.
 func (m *Monitor) fresh(res Result) Result {
 	out := Result{Errors: res.Errors}
 	for _, p := range res.Points {
-		if prev, ok := m.last[p.Table]; ok && !p.CommittedAt.After(prev) {
+		if prev, ok := m.last[p.Table]; ok && !p.RecordAt.After(prev) {
 			continue
 		}
-		m.last[p.Table] = p.CommittedAt
+		m.last[p.Table] = p.RecordAt
 		out.Points = append(out.Points, p)
 		m.log.Info("Measured replication latency", "table", p.Table, "latency_ms", p.LatencyMs, "committed_at", p.CommittedAt)
 	}
