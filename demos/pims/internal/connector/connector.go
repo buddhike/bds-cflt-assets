@@ -19,8 +19,20 @@ import (
 	"pims/internal/schema"
 )
 
-// Name is the Kafka Connect connector name.
-const Name = "pims-mysql"
+// NamePrefix starts every PIMS connector name.
+const NamePrefix = "pims-mysql"
+
+// Name returns the connector name for a MySQL generation.
+//
+// The generation changes whenever the MySQL volume is recreated. Connect
+// keys source offsets by connector name, and Debezium's schema history
+// lives in a Kafka topic, both in Confluent Cloud. A fresh database
+// therefore needs a fresh name and history topic, otherwise Debezium
+// would resume from binlog positions that no longer exist.
+func Name(generation string) string { return NamePrefix + "-" + generation }
+
+// historyTopic returns the Debezium schema history topic for a generation.
+func historyTopic(generation string) string { return "_pims-schema-history-" + generation }
 
 // TopicPrefix is Debezium's topic.prefix. A RegexRouter then strips it so
 // the topics are named after the tables (patients, visits, appointments).
@@ -37,6 +49,8 @@ var ErrConnectorFailed = errors.New("debezium connector failed")
 // Secrets are referenced through Kafka Connect's env config provider and
 // resolved inside the Connect container.
 type Settings struct {
+	// Generation identifies the MySQL database instance; see Name.
+	Generation string
 	// KafkaBootstrap is used by Debezium's schema history producer and
 	// consumer, which do not inherit the worker's connection settings.
 	KafkaBootstrap string
@@ -46,7 +60,21 @@ type Settings struct {
 }
 
 // Config builds the Debezium MySQL connector configuration.
-func Config(s Settings) map[string]string {
+func Config(s Settings) (map[string]string, error) {
+	var missing []string
+	if s.Generation == "" {
+		missing = append(missing, "generation")
+	}
+	if s.KafkaBootstrap == "" {
+		missing = append(missing, "kafka bootstrap")
+	}
+	if s.MySQLHost == "" || s.MySQLPort <= 0 {
+		missing = append(missing, "mysql host and port")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("connector settings are missing %s", strings.Join(missing, ", "))
+	}
+
 	jaas := `org.apache.kafka.common.security.plain.PlainLoginModule required ` +
 		`username="${env:PIMS_KAFKA_API_KEY}" password="${env:PIMS_KAFKA_API_SECRET}";`
 
@@ -56,6 +84,7 @@ func Config(s Settings) map[string]string {
 	}
 
 	return map[string]string{
+		"name":              Name(s.Generation),
 		"connector.class":   "io.debezium.connector.mysql.MySqlConnector",
 		"tasks.max":         "1",
 		"database.hostname": s.MySQLHost,
@@ -77,7 +106,7 @@ func Config(s Settings) map[string]string {
 		"include.schema.changes": "false",
 
 		"schema.history.internal.kafka.bootstrap.servers":    s.KafkaBootstrap,
-		"schema.history.internal.kafka.topic":                "_pims-schema-history",
+		"schema.history.internal.kafka.topic":                historyTopic(s.Generation),
 		"schema.history.internal.producer.security.protocol": "SASL_SSL",
 		"schema.history.internal.producer.sasl.mechanism":    "PLAIN",
 		"schema.history.internal.producer.sasl.jaas.config":  jaas,
@@ -90,11 +119,12 @@ func Config(s Settings) map[string]string {
 		"transforms.route.type":        "org.apache.kafka.connect.transforms.RegexRouter",
 		"transforms.route.regex":       fmt.Sprintf(`%s\.%s\.(.*)`, TopicPrefix, schema.Database),
 		"transforms.route.replacement": "$1",
-	}
+	}, nil
 }
 
 // Client talks to the Kafka Connect REST API.
 type Client struct {
+	name    string
 	baseURL string
 	http    *http.Client
 	log     *slog.Logger
@@ -102,10 +132,12 @@ type Client struct {
 	pollInterval time.Duration
 }
 
-// NewClient returns a client for the Connect REST API at baseURL, e.g.
-// http://127.0.0.1:8083. The API is only published on localhost.
-func NewClient(baseURL string, log *slog.Logger) *Client {
+// NewClient returns a client that manages the connector for generation via
+// the Connect REST API at baseURL, e.g. http://127.0.0.1:8083. The API is
+// only published on localhost.
+func NewClient(baseURL, generation string, log *slog.Logger) *Client {
 	return &Client{
+		name:         Name(generation),
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		http:         &http.Client{Timeout: 15 * time.Second},
 		log:          log.With("component", "connector"),
@@ -114,7 +146,8 @@ func NewClient(baseURL string, log *slog.Logger) *Client {
 }
 
 // Register creates or updates the connector. PUT /connectors/{name}/config
-// is idempotent, so this is safe to run on every setup.
+// is idempotent, so this is safe to run on every setup. Connectors left
+// over from earlier MySQL generations are deleted first.
 func (c *Client) Register(ctx context.Context, cfg map[string]string) error {
 	body, err := json.Marshal(cfg)
 	if err != nil {
@@ -125,14 +158,44 @@ func (c *Client) Register(ctx context.Context, cfg map[string]string) error {
 		c.log.Info("Waiting for Kafka Connect", "attempt", attempt, "retry_in", wait.Round(time.Millisecond), "error", err)
 	}
 	err = retry.Do(ctx, p, func(ctx context.Context) error {
-		_, err := c.do(ctx, http.MethodPut, "/connectors/"+url.PathEscape(Name)+"/config", body)
+		if err := c.deleteStale(ctx); err != nil {
+			return err
+		}
+		_, err := c.do(ctx, http.MethodPut, c.path("/config"), body)
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("register connector %s: %w", Name, err)
+		return fmt.Errorf("register connector %s: %w", c.name, err)
 	}
-	c.log.Info("Registered Debezium connector", "connector", Name)
+	c.log.Info("Registered Debezium connector", "connector", c.name)
 	return nil
+}
+
+// deleteStale removes PIMS connectors from earlier MySQL generations,
+// which would otherwise keep failing against the recreated database.
+func (c *Client) deleteStale(ctx context.Context) error {
+	b, err := c.do(ctx, http.MethodGet, "/connectors", nil)
+	if err != nil {
+		return fmt.Errorf("list connectors: %w", err)
+	}
+	var names []string
+	if err := json.Unmarshal(b, &names); err != nil {
+		return retry.Permanent(fmt.Errorf("decode connector list: %w", err))
+	}
+	for _, n := range names {
+		if n == c.name || !strings.HasPrefix(n, NamePrefix) {
+			continue
+		}
+		c.log.Info("Deleting connector from an earlier database", "connector", n)
+		if _, err := c.do(ctx, http.MethodDelete, "/connectors/"+url.PathEscape(n), nil); err != nil {
+			return fmt.Errorf("delete stale connector %s: %w", n, err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) path(suffix string) string {
+	return "/connectors/" + url.PathEscape(c.name) + suffix
 }
 
 // Status is the subset of GET /connectors/{name}/status that PIMS uses.
@@ -177,7 +240,7 @@ func (s Status) failure() string {
 // Status fetches the connector status.
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	var st Status
-	b, err := c.do(ctx, http.MethodGet, "/connectors/"+url.PathEscape(Name)+"/status", nil)
+	b, err := c.do(ctx, http.MethodGet, c.path("/status"), nil)
 	if err != nil {
 		return st, fmt.Errorf("get connector status: %w", err)
 	}
@@ -199,7 +262,7 @@ func (c *Client) WaitRunning(ctx context.Context) error {
 		case err != nil:
 			c.log.Info("Waiting for connector status", "error", err)
 		case st.Running():
-			c.log.Info("Debezium connector is running", "connector", Name)
+			c.log.Info("Debezium connector is running", "connector", c.name)
 			return nil
 		case st.failure() != "":
 			return fmt.Errorf("%w: %s", ErrConnectorFailed, st.failure())
@@ -209,7 +272,7 @@ func (c *Client) WaitRunning(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait for connector %s: %w", Name, ctx.Err())
+			return fmt.Errorf("wait for connector %s: %w", c.name, ctx.Err())
 		case <-t.C:
 		}
 	}
@@ -217,13 +280,13 @@ func (c *Client) WaitRunning(ctx context.Context) error {
 
 // Delete removes the connector. A missing connector is not an error.
 func (c *Client) Delete(ctx context.Context) error {
-	_, err := c.do(ctx, http.MethodDelete, "/connectors/"+url.PathEscape(Name), nil)
+	_, err := c.do(ctx, http.MethodDelete, c.path(""), nil)
 	var he *HTTPError
 	if errors.As(err, &he) && he.StatusCode == http.StatusNotFound {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("delete connector %s: %w", Name, err)
+		return fmt.Errorf("delete connector %s: %w", c.name, err)
 	}
 	return nil
 }

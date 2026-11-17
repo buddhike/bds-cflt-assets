@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -24,8 +26,17 @@ type Registry struct {
 	pollInterval time.Duration
 }
 
-// NewRegistry returns a client for the Schema Registry at baseURL.
-func NewRegistry(baseURL, apiKey, apiSecret string, log *slog.Logger) *Registry {
+// NewRegistry returns a client for the Schema Registry at baseURL. Basic
+// auth credentials are only ever sent over HTTPS; plain HTTP is accepted
+// for loopback addresses so tests can use httptest.
+func NewRegistry(baseURL, apiKey, apiSecret string, log *slog.Logger) (*Registry, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse schema registry url: %w", err)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Hostname())) {
+		return nil, fmt.Errorf("schema registry url must use https, got %q", u.Scheme)
+	}
 	return &Registry{
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		apiKey:       apiKey,
@@ -33,7 +44,15 @@ func NewRegistry(baseURL, apiKey, apiSecret string, log *slog.Logger) *Registry 
 		http:         &http.Client{Timeout: 15 * time.Second},
 		log:          log.With("component", "schema-registry"),
 		pollInterval: 5 * time.Second,
+	}, nil
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
 	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Subjects lists registered subjects.

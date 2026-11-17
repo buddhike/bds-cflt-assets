@@ -16,8 +16,19 @@ import (
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
+var testSettings = Settings{Generation: "g1", KafkaBootstrap: "pkc:9092", MySQLHost: "mysql", MySQLPort: 3306}
+
+func mustConfig(t *testing.T, s Settings) map[string]string {
+	t.Helper()
+	cfg, err := Config(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
 func TestConfigKeepsSecretsOutOfConfig(t *testing.T) {
-	cfg := Config(Settings{KafkaBootstrap: "pkc:9092", MySQLHost: "mysql", MySQLPort: 3306})
+	cfg := mustConfig(t, testSettings)
 
 	if cfg["database.password"] != "${env:PIMS_MYSQL_DEBEZIUM_PASSWORD}" {
 		t.Fatalf("database.password = %q, want env reference", cfg["database.password"])
@@ -33,10 +44,19 @@ func TestConfigKeepsSecretsOutOfConfig(t *testing.T) {
 	if cfg["time.precision.mode"] != "connect" {
 		t.Fatal("time.precision.mode must be connect so Tableflow gets timestamp types")
 	}
+	if cfg["name"] != "pims-mysql-g1" || cfg["schema.history.internal.kafka.topic"] != "_pims-schema-history-g1" {
+		t.Fatalf("connector name and history topic must carry the generation: %q %q", cfg["name"], cfg["schema.history.internal.kafka.topic"])
+	}
+}
+
+func TestConfigValidatesSettings(t *testing.T) {
+	if _, err := Config(Settings{}); err == nil || !strings.Contains(err.Error(), "kafka bootstrap") {
+		t.Fatalf("Config(empty) = %v, want missing settings error", err)
+	}
 }
 
 func TestRouteRegexMapsTopicsToTableNames(t *testing.T) {
-	cfg := Config(Settings{})
+	cfg := mustConfig(t, testSettings)
 	if cfg["transforms.route.regex"] != `pims\.pims\.(.*)` || cfg["transforms.route.replacement"] != "$1" {
 		t.Fatalf("unexpected route transform: %q -> %q", cfg["transforms.route.regex"], cfg["transforms.route.replacement"])
 	}
@@ -45,7 +65,11 @@ func TestRouteRegexMapsTopicsToTableNames(t *testing.T) {
 func TestRegisterRetriesTransientErrorsAndSendsUserAgent(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/connectors/pims-mysql/config" {
+		if r.Method == http.MethodGet && r.URL.Path == "/connectors" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.Method != http.MethodPut || r.URL.Path != "/connectors/pims-mysql-g1/config" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		if r.Header.Get("User-Agent") != userAgent {
@@ -65,7 +89,7 @@ func TestRegisterRetriesTransientErrorsAndSendsUserAgent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL, discard())
+	c := NewClient(srv.URL, "g1", discard())
 	if err := c.Register(context.Background(), map[string]string{"a": "b"}); err != nil {
 		t.Fatalf("Register() = %v", err)
 	}
@@ -82,7 +106,7 @@ func TestRegisterStopsOnBadRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := NewClient(srv.URL, discard()).Register(context.Background(), map[string]string{})
+	err := NewClient(srv.URL, "g1", discard()).Register(context.Background(), map[string]string{})
 	var he *HTTPError
 	if !errors.As(err, &he) || he.StatusCode != http.StatusBadRequest {
 		t.Fatalf("Register() = %v, want HTTP 400", err)
@@ -110,7 +134,7 @@ func TestWaitRunning(t *testing.T) {
 		`{"connector":{"state":"RUNNING"},"tasks":[{"id":0,"state":"RUNNING"}]}`,
 	)
 	defer srv.Close()
-	c := NewClient(srv.URL, discard())
+	c := NewClient(srv.URL, "g1", discard())
 	c.pollInterval = time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -123,7 +147,7 @@ func TestWaitRunning(t *testing.T) {
 func TestWaitRunningReportsTaskFailure(t *testing.T) {
 	srv := statusServer(t, `{"connector":{"state":"RUNNING"},"tasks":[{"id":0,"state":"FAILED","trace":"Access denied for user 'debezium'\n\tat ..."}]}`)
 	defer srv.Close()
-	c := NewClient(srv.URL, discard())
+	c := NewClient(srv.URL, "g1", discard())
 	c.pollInterval = time.Millisecond
 
 	err := c.WaitRunning(context.Background())
@@ -137,7 +161,7 @@ func TestDeleteIgnoresMissingConnector(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
-	if err := NewClient(srv.URL, discard()).Delete(context.Background()); err != nil {
+	if err := NewClient(srv.URL, "g1", discard()).Delete(context.Background()); err != nil {
 		t.Fatalf("Delete() = %v, want nil for 404", err)
 	}
 }
@@ -158,7 +182,10 @@ func TestRegistryWaitForValueSchemas(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := NewRegistry(srv.URL, "key", "secret", discard())
+	r, err := NewRegistry(srv.URL, "key", "secret", discard())
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.pollInterval = time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -175,5 +202,37 @@ func TestStatusRunningNeedsTasks(t *testing.T) {
 	s.Connector.State = "RUNNING"
 	if s.Running() {
 		t.Fatal("a connector with no tasks is not running yet")
+	}
+}
+
+func TestRegisterDeletesStaleGenerations(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/connectors":
+			_, _ = w.Write([]byte(`["pims-mysql-old","pims-mysql-g2","someone-elses"]`))
+		case r.Method == http.MethodDelete:
+			deleted = append(deleted, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	if err := NewClient(srv.URL, "g2", discard()).Register(context.Background(), map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0] != "/connectors/pims-mysql-old" {
+		t.Fatalf("deleted = %v, want only the stale PIMS connector", deleted)
+	}
+}
+
+func TestRegistryRequiresHTTPS(t *testing.T) {
+	if _, err := NewRegistry("http://psrc-123.us-east-1.aws.confluent.cloud", "k", "s", discard()); err == nil {
+		t.Fatal("plain http to a remote host must be rejected")
+	}
+	if _, err := NewRegistry("https://psrc-123.us-east-1.aws.confluent.cloud", "k", "s", discard()); err != nil {
+		t.Fatalf("https rejected: %v", err)
 	}
 }
