@@ -26,3 +26,17 @@ func TestLineWriterSplitsAndFlushes(t *testing.T) {
 		}
 	}
 }
+
+func TestLineWriterEmitsOversizedPartialLine(t *testing.T) {
+	var got []Entry
+	h := NewTeeHandler(slog.NewTextHandler(&bytes.Buffer{}, nil), func(e Entry) { got = append(got, e) })
+	w := NewLineWriter(slog.New(h), "Output")
+
+	_, _ = w.Write(bytes.Repeat([]byte("x"), maxLine))
+	if len(got) != 1 {
+		t.Fatalf("oversized partial line should be emitted, got %d entries", len(got))
+	}
+	if w.buf.Len() != 0 {
+		t.Fatalf("buffer not cleared, len = %d", w.buf.Len())
+	}
+}

@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// maxLine caps buffered output so a tool that never prints a newline cannot
+// grow memory without bound.
+const maxLine = 64 << 10
+
 // LineWriter is an io.Writer that logs each complete line written to it.
 // It is used to stream subprocess output (terraform, docker compose) into
 // slog, and from there to the UI.
@@ -32,9 +36,14 @@ func (w *LineWriter) Write(p []byte) (int, error) {
 	for {
 		line, err := w.buf.ReadString('\n')
 		if err != nil {
-			// Incomplete line: put it back until more output arrives.
+			// Incomplete line: keep it until more output arrives, unless it
+			// has grown past maxLine, in which case emit it as is.
 			w.buf.Reset()
-			w.buf.WriteString(line)
+			if len(line) >= maxLine {
+				w.emit(line)
+			} else {
+				w.buf.WriteString(line)
+			}
 			return len(p), nil
 		}
 		w.emit(line)
