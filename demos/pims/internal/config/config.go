@@ -85,9 +85,17 @@ func (c Credentials) MarshalJSON() ([]byte, error) {
 func (c Credentials) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("aws_region", c.AWSRegion),
-		slog.String("api_key", c.APIKey),
+		slog.String("api_key", maskKey(c.APIKey)),
 		slog.String("api_secret", "[REDACTED]"),
 	)
+}
+
+// maskKey keeps only a short prefix of an API key id for logs.
+func maskKey(k string) string {
+	if len(k) <= 4 {
+		return "****"
+	}
+	return k[:4] + "****"
 }
 
 // Workspace is the directory where PIMS keeps its working files: the
