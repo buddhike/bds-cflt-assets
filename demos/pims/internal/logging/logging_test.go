@@ -35,6 +35,26 @@ func TestTeeHandlerForwardsToSinkAndBase(t *testing.T) {
 	}
 }
 
+func TestTeeHandlerGroupThenAttrsAndNestedGroups(t *testing.T) {
+	var got []Entry
+	h := NewTeeHandler(slog.NewTextHandler(&bytes.Buffer{}, nil), func(e Entry) { got = append(got, e) })
+
+	slog.New(h).WithGroup("sim").With("rate", 5).Info("Tick", slog.Group("event", "kind", "visit"))
+
+	want := "sim.rate=5 sim.event.kind=visit"
+	if len(got) != 1 || got[0].Attrs != want {
+		t.Fatalf("got %+v, want Attrs %q", got, want)
+	}
+}
+
+func TestTeeHandlerNilSink(t *testing.T) {
+	var buf bytes.Buffer
+	slog.New(NewTeeHandler(slog.NewTextHandler(&buf, nil), nil)).Info("Still logged")
+	if !strings.Contains(buf.String(), "Still logged") {
+		t.Fatalf("base handler did not receive record: %q", buf.String())
+	}
+}
+
 func TestTeeHandlerRespectsLevel(t *testing.T) {
 	var got []Entry
 	base := slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelWarn})
