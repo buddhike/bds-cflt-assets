@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,8 +54,24 @@ func TestCredentialsNormalise(t *testing.T) {
 func TestCredentialsNeverLeakSecret(t *testing.T) {
 	c := Credentials{AWSRegion: "us-east-1", APIKey: "key", APISecret: "topsecret"}
 
-	if s := fmt.Sprintf("%v %+v %s", c, c, c); strings.Contains(s, "topsecret") {
+	if s := fmt.Sprintf("%v %+v %s %#v", c, c, c, c); strings.Contains(s, "topsecret") {
 		t.Fatalf("fmt output leaked secret: %s", s)
+	}
+
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "topsecret") {
+		t.Fatalf("json output leaked secret: %s", b)
+	}
+
+	var decoded Credentials
+	if err := json.Unmarshal([]byte(`{"awsRegion":"us-east-1","apiKey":"k","apiSecret":"in"}`), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.APISecret != "in" {
+		t.Fatalf("decoding must keep the secret, got %q", decoded.APISecret)
 	}
 
 	var buf bytes.Buffer

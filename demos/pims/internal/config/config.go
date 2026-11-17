@@ -66,6 +66,21 @@ func (c Credentials) String() string {
 	return fmt.Sprintf("Credentials{AWSRegion:%s APIKey:%s APISecret:[REDACTED]}", c.AWSRegion, c.APIKey)
 }
 
+// GoString redacts the secret for %#v.
+func (c Credentials) GoString() string { return c.String() }
+
+// MarshalJSON redacts the secret so credentials cannot leak through a
+// bound Wails method result or an error payload. Credentials are still
+// decoded from JSON normally when the setup form is submitted.
+func (c Credentials) MarshalJSON() ([]byte, error) {
+	type redacted struct {
+		AWSRegion string `json:"awsRegion"`
+		APIKey    string `json:"apiKey"`
+		APISecret string `json:"apiSecret"`
+	}
+	return json.Marshal(redacted{AWSRegion: c.AWSRegion, APIKey: c.APIKey, APISecret: "[REDACTED]"})
+}
+
 // LogValue redacts the secret when credentials are passed to slog.
 func (c Credentials) LogValue() slog.Value {
 	return slog.GroupValue(
@@ -109,6 +124,10 @@ func (w Workspace) Ensure() error {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("create workspace dir %s: %w", d, err)
 		}
+		// MkdirAll leaves existing directories alone; tighten them too.
+		if err := os.Chmod(d, 0o700); err != nil {
+			return fmt.Errorf("restrict workspace dir %s: %w", d, err)
+		}
 	}
 	return nil
 }
@@ -140,8 +159,22 @@ func (w Workspace) SaveSettings(s Settings) error {
 	if err != nil {
 		return fmt.Errorf("encode settings: %w", err)
 	}
-	if err := os.WriteFile(w.settingsPath(), b, 0o600); err != nil {
+	// Write to a temp file and rename so a crash never leaves a truncated
+	// settings file that would block the next launch.
+	tmp, err := os.CreateTemp(w.Root, "settings-*.json")
+	if err != nil {
+		return fmt.Errorf("create temp settings file: %w", err)
+	}
+	defer os.Remove(tmp.Name()) // no-op after a successful rename
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
 		return fmt.Errorf("write settings: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close settings: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), w.settingsPath()); err != nil {
+		return fmt.Errorf("replace settings: %w", err)
 	}
 	return nil
 }
