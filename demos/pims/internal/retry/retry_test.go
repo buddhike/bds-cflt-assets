@@ -3,6 +3,7 @@ package retry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -43,33 +44,81 @@ func TestDoGivesUpAfterAttempts(t *testing.T) {
 
 func TestDoStopsOnPermanentError(t *testing.T) {
 	sentinel := errors.New("bad request")
-	calls := 0
-	err := Do(context.Background(), fast, func(context.Context) error {
-		calls++
-		return Permanent(sentinel)
-	})
-	if !errors.Is(err, sentinel) || IsPermanent(err) {
-		t.Fatalf("Do() = %v, want unwrapped sentinel", err)
+	tests := map[string]func() error{
+		"direct":  func() error { return Permanent(sentinel) },
+		"wrapped": func() error { return fmt.Errorf("create topic: %w", Permanent(sentinel)) },
+		"joined":  func() error { return errors.Join(errors.New("other"), Permanent(sentinel)) },
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
+	for name, mk := range tests {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			err := Do(context.Background(), fast, func(context.Context) error {
+				calls++
+				return mk()
+			})
+			if err == nil || !errors.Is(err, sentinel) {
+				t.Fatalf("Do() = %v, want error wrapping sentinel", err)
+			}
+			if calls != 1 {
+				t.Fatalf("calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestDoKeepsCallerContextOnPermanentError(t *testing.T) {
+	err := Do(context.Background(), fast, func(context.Context) error {
+		return fmt.Errorf("create topic: %w", Permanent(errors.New("bad request")))
+	})
+	if got := err.Error(); got != "create topic: bad request" {
+		t.Fatalf("Do() = %q, want caller context preserved", got)
 	}
 }
 
 func TestDoHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	slow := Policy{Attempts: 10, Initial: time.Hour, Max: time.Hour}
+	sentinel := errors.New("fail")
 	calls := 0
 	err := Do(ctx, slow, func(context.Context) error {
 		calls++
 		cancel()
-		return errors.New("fail")
+		return sentinel
 	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Do() = %v, want context.Canceled", err)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sentinel) {
+		t.Fatalf("Do() = %v, want both context.Canceled and the last error", err)
 	}
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestDoBackoffDoublesAndIsCapped(t *testing.T) {
+	var waits []time.Duration
+	p := Policy{
+		Attempts: 5,
+		Initial:  time.Millisecond,
+		Max:      3 * time.Millisecond,
+		OnRetry:  func(_ int, _ error, w time.Duration) { waits = append(waits, w) },
+	}
+	_ = Do(context.Background(), p, func(context.Context) error { return errors.New("x") })
+
+	// Base delays are 1ms, 2ms, 3ms (capped), 3ms; jitter adds at most 20%.
+	bases := []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond, 3 * time.Millisecond}
+	if len(waits) != len(bases) {
+		t.Fatalf("got %d waits, want %d", len(waits), len(bases))
+	}
+	for i, base := range bases {
+		if waits[i] < base || waits[i] > base+base/5 {
+			t.Errorf("wait[%d] = %v, want in [%v, %v]", i, waits[i], base, base+base/5)
+		}
+	}
+}
+
+func TestPolicyNormalised(t *testing.T) {
+	p := Policy{Attempts: 0, Initial: -time.Second}.normalised()
+	if p.Attempts != 1 || p.Initial != Default.Initial || p.Max != Default.Initial {
+		t.Fatalf("normalised() = %+v", p)
 	}
 }
 
