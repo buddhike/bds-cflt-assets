@@ -27,6 +27,9 @@ var ErrBusy = errors.New("another setup or teardown is in progress")
 // prepared the database.
 var ErrNotReady = errors.New("run setup first")
 
+// ErrClosed is returned once the pipeline is closed or tearing down.
+var ErrClosed = errors.New("pipeline is shutting down")
+
 // DefaultRate is the event rate the simulator starts at during setup. Some
 // rows must exist before Debezium registers the topic schemas, and
 // Tableflow can only be enabled once they do.
@@ -117,12 +120,18 @@ type Pipeline struct {
 	monitorDone chan struct{}
 	outputs     *terraform.Outputs
 	secrets     *compose.MySQLSecrets
+	// closed is set by Close and during Teardown so nothing new (simulator,
+	// monitor, connection) starts while resources are being released.
+	closed bool
+	// rate is the last event rate requested, reused when setup restarts
+	// the simulator.
+	rate float64
 }
 
 // New returns a Pipeline. onStep and onLatency are called from background
 // goroutines and must not block.
 func New(deps Deps, log *slog.Logger, onStep func(StepState), onLatency func(latency.Result)) *Pipeline {
-	p := &Pipeline{deps: deps, log: log.With("component", "pipeline"), onStep: onStep, onLatency: onLatency}
+	p := &Pipeline{deps: deps, log: log.With("component", "pipeline"), onStep: onStep, onLatency: onLatency, rate: DefaultRate}
 	p.resetSteps()
 	return p
 }
@@ -165,10 +174,19 @@ func (p *Pipeline) update(id StepID, status, detail string) {
 	}
 }
 
+func stepTitle(id StepID) string {
+	for _, s := range Steps {
+		if s.ID == id {
+			return s.Title
+		}
+	}
+	return string(id)
+}
+
 // run executes one step, recording its outcome.
 func (p *Pipeline) run(id StepID, fn func() (string, error)) error {
 	p.update(id, StatusRunning, "")
-	title := p.steps[id].Title
+	title := stepTitle(id)
 	p.log.Info("Setup step started", "step", id, "title", title)
 	detail, err := fn()
 	if err != nil {
@@ -191,6 +209,12 @@ func (p *Pipeline) Setup(ctx context.Context, creds config.Credentials) error {
 	if err := creds.Validate(); err != nil {
 		return err
 	}
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return ErrClosed
+	}
 	p.resetSteps()
 
 	var (
@@ -204,31 +228,50 @@ func (p *Pipeline) Setup(ctx context.Context, creds config.Credentials) error {
 		{StepDocker, func() (string, error) { return "", p.deps.CheckDocker(ctx) }},
 		{StepCloud, func() (string, error) {
 			o, err := p.deps.Provision(ctx, creds, terraform.ApplyOptions{})
+			if err != nil {
+				return "", err
+			}
 			out = o
-			return fmt.Sprintf("Environment %s, cluster %s", o.EnvironmentID, o.KafkaClusterID), err
+			p.mu.Lock()
+			p.outputs = &o
+			p.mu.Unlock()
+			return fmt.Sprintf("Environment %s, cluster %s", o.EnvironmentID, o.KafkaClusterID), nil
 		}},
 		{StepServices, func() (string, error) {
 			s, err := p.deps.StartLocal(ctx, out)
+			if err != nil {
+				return "", err
+			}
+			// Recorded now so a Teardown after a later failure still
+			// deletes the connector.
 			secrets = s
-			return "", err
+			p.mu.Lock()
+			p.secrets = &s
+			p.mu.Unlock()
+			return "", nil
 		}},
 		{StepSchema, func() (string, error) {
 			store, closer, err := p.deps.PrepareDB(ctx, secrets)
 			if err != nil {
 				return "", err
 			}
-			p.attachStore(store, closer)
+			if err := p.attachStore(store, closer); err != nil {
+				return "", err
+			}
 			return "patients, appointments, visits", nil
 		}},
 		{StepConnector, func() (string, error) { return "", p.deps.StartCDC(ctx, out, secrets) }},
 		{StepSimulate, func() (string, error) {
 			// Debezium registers a topic's schema with its first record, so
 			// data must flow before Tableflow can be enabled.
-			err := p.StartSimulation(ctx, DefaultRate)
+			p.mu.Lock()
+			rate := p.rate
+			p.mu.Unlock()
+			err := p.StartSimulation(ctx, rate)
 			if errors.Is(err, sim.ErrAlreadyRunning) {
 				return "Already running", nil
 			}
-			return fmt.Sprintf("%.0f events/sec", DefaultRate), err
+			return fmt.Sprintf("%g events/sec", rate), err
 		}},
 		{StepSchemas, func() (string, error) { return "", p.deps.WaitSchemas(ctx, out) }},
 		{StepTableflow, func() (string, error) {
@@ -246,19 +289,23 @@ func (p *Pipeline) Setup(ctx context.Context, creds config.Credentials) error {
 		}
 	}
 	p.mu.Lock()
-	p.outputs, p.secrets = &out, &secrets
+	p.outputs = &out
 	p.mu.Unlock()
 	p.log.Info("PIMS demo is ready")
 	return nil
 }
 
-func (p *Pipeline) attachStore(store sim.Store, closer io.Closer) {
+func (p *Pipeline) attachStore(store sim.Store, closer io.Closer) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		_ = closer.Close()
+		return ErrClosed
+	}
 	if p.sim != nil {
 		// Re-running setup: keep the existing simulator and connection.
 		_ = closer.Close()
-		return
+		return nil
 	}
 	seed := p.deps.Seed
 	if seed == 0 {
@@ -266,6 +313,7 @@ func (p *Pipeline) attachStore(store sim.Store, closer io.Closer) {
 	}
 	p.sim = sim.New(store, p.log, seed)
 	p.dbCloser = closer
+	return nil
 }
 
 func (p *Pipeline) startMonitor(out terraform.Outputs) error {
@@ -278,6 +326,11 @@ func (p *Pipeline) startMonitor(out terraform.Outputs) error {
 	done := make(chan struct{})
 	m := latency.NewMonitor(q, p.deps.PollInterval, p.log)
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		cancel()
+		return ErrClosed
+	}
 	p.stopMonitor, p.monitorDone = cancel, done
 	p.mu.Unlock()
 	go func() {
@@ -305,6 +358,9 @@ func (p *Pipeline) stopLatencyMonitor() {
 func (p *Pipeline) simulator() (*sim.Simulator, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil, ErrClosed
+	}
 	if p.sim == nil {
 		return nil, ErrNotReady
 	}
@@ -319,6 +375,9 @@ func (p *Pipeline) StartSimulation(ctx context.Context, rate float64) error {
 	if err != nil {
 		return err
 	}
+	p.mu.Lock()
+	p.rate = rate
+	p.mu.Unlock()
 	// Detach from the caller's context: a Wails call context ends when the
 	// call returns, but the simulation should keep running.
 	return s.Start(context.WithoutCancel(ctx), rate)
@@ -331,6 +390,9 @@ func (p *Pipeline) SetRate(rate float64) error {
 		return err
 	}
 	s.SetRate(rate)
+	p.mu.Lock()
+	p.rate = rate
+	p.mu.Unlock()
 	return nil
 }
 
@@ -366,6 +428,9 @@ func (p *Pipeline) Teardown(ctx context.Context, creds config.Credentials) error
 		return err
 	}
 	p.log.Info("Tearing down the PIMS demo")
+	p.mu.Lock()
+	p.closed = true // block StartSimulation etc. while resources go away
+	p.mu.Unlock()
 	p.shutdownLocal()
 
 	var errs []error
@@ -385,6 +450,7 @@ func (p *Pipeline) Teardown(ctx context.Context, creds config.Credentials) error
 	}
 	p.mu.Lock()
 	p.outputs, p.secrets = nil, nil
+	p.closed = false
 	p.mu.Unlock()
 	p.resetSteps()
 	if err := errors.Join(errs...); err != nil {
@@ -412,7 +478,11 @@ func (p *Pipeline) shutdownLocal() {
 }
 
 // Close stops background work without deleting anything, so the demo can
-// be resumed on the next launch.
+// be resumed on the next launch. A Setup still in progress will not start
+// anything new after Close.
 func (p *Pipeline) Close() {
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
 	p.shutdownLocal()
 }

@@ -208,3 +208,74 @@ func TestTeardownDestroysEverythingEvenIfLocalStopFails(t *testing.T) {
 		t.Fatal("simulator still running after teardown")
 	}
 }
+
+func TestCloseDuringSetupStartsNothingNew(t *testing.T) {
+	r := &recorder{}
+	deps := fakeDeps(r)
+	release := make(chan struct{})
+	deps.StartLocal = func(context.Context, terraform.Outputs) (compose.MySQLSecrets, error) {
+		<-release // Close happens while services are starting
+		return compose.MySQLSecrets{Generation: "g1"}, nil
+	}
+	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
+
+	done := make(chan error, 1)
+	go func() { done <- p.Setup(context.Background(), creds) }()
+	for !slices.Contains(r.list(), "provision") {
+		time.Sleep(time.Millisecond)
+	}
+	p.Close()
+	close(release)
+
+	if err := <-done; !errors.Is(err, ErrClosed) {
+		t.Fatalf("Setup() after Close = %v, want ErrClosed", err)
+	}
+	if !slices.Contains(r.list(), "db-close") {
+		t.Fatal("connection opened after Close must be closed again")
+	}
+	if p.SimStats().Running {
+		t.Fatal("simulator started after Close")
+	}
+}
+
+func TestTeardownAfterPartialSetupDeletesConnector(t *testing.T) {
+	r := &recorder{}
+	deps := fakeDeps(r)
+	deps.WaitSchemas = func(context.Context, terraform.Outputs) error { return errors.New("timed out") }
+	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
+	if err := p.Setup(context.Background(), creds); err == nil {
+		t.Fatal("Setup() = nil, want failure")
+	}
+	if err := p.Teardown(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(r.list(), "cdc-delete") {
+		t.Fatalf("calls = %v, want the connector deleted after a partial setup", r.list())
+	}
+	// The pipeline is usable again after teardown.
+	if err := p.Setup(context.Background(), creds); errors.Is(err, ErrClosed) {
+		t.Fatal("Setup after Teardown must not report closed")
+	}
+	p.Close()
+}
+
+func TestSetupReusesOperatorRate(t *testing.T) {
+	p := New(fakeDeps(&recorder{}), slog.New(slog.DiscardHandler), nil, nil)
+	defer p.Close()
+	ctx := context.Background()
+	if err := p.Setup(ctx, creds); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetRate(25); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StopSimulation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Setup(ctx, creds); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.SimStats().Rate; got != 25 {
+		t.Fatalf("rate after re-running setup = %v, want 25", got)
+	}
+}
