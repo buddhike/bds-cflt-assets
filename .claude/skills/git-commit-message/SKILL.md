@@ -20,10 +20,16 @@ here. Edit the rules below; Claude follows them whenever it commits.
 
 ## Subject line
 
-- Format: `<type>(<scope>): <summary>`
+- Format: `<asset>: <type>(<scope>): <summary>`
+- `<asset>` is the name of the asset's folder, e.g. `pims` for `demos/pims`.
+  Use `repo` for changes outside any asset, such as `.claude/` or files at
+  the repository root.
+- If one change touches more than one asset, split it into one commit per
+  asset.
 - Imperative mood: "add retry to statement polling", not "added" or "adds".
-- At most 50 characters where possible, 72 as a hard limit.
-- Lowercase after the colon, no trailing full stop.
+- At most 50 characters where possible, 72 as a hard limit, both counting
+  the asset prefix.
+- Lowercase after each colon, no trailing full stop.
 
 ### Types
 
@@ -39,10 +45,8 @@ here. Edit the rules below; Claude follows them whenever it commits.
 
 ### Scopes
 
-Use the package that changed. Leave the scope out if the change spans several.
-
-`flinksql`, `testspec`, `config`, `ccloud`, `engine`, `runner`, `cli`
-(`cli` is `main.go`), `parser`
+Use the package or area that changed within the asset. Leave the scope out
+if the change spans several. Each asset's `CLAUDE.md` lists its scopes.
 
 ## Body
 
@@ -73,9 +77,9 @@ Use the package that changed. Leave the scope out if the change spans several.
 ## Example
 
 ```
-fix(runner): drop tables after pipelines are deleted
+pims: fix(connector): scope debezium state to the mysql generation
 
-Dropping a table that a running INSERT still wrote to failed with a
-generic "in use" error, which left tables behind for `ccflink clean`.
-Delete the pipelines first and wait for them to stop.
+Recreating the MySQL volume reset the binlog, but the connector kept its
+old name and resumed from stale offsets in Confluent Cloud. Derive the
+connector name and schema-history topic from the MySQL generation.
 ```
