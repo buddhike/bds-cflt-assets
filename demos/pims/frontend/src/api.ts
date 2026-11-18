@@ -36,11 +36,20 @@ export interface LogEntry {
   attrs: string;
 }
 
+/** The latency of one Iceberg snapshot and the rows it published. */
 export interface LatencyPoint {
   table: string;
+  snapshotId: string;
+  records: number;
+  /** Oldest updated_at among the snapshot's new rows. */
   recordAt: string;
+  /** Newest updated_at among the snapshot's new rows. */
+  newestAt: string;
   committedAt: string;
+  /** Longest wait: committedAt - recordAt. */
   latencyMs: number;
+  /** Shortest wait: committedAt - newestAt. */
+  minLatencyMs: number;
   observedAt: string;
 }
 

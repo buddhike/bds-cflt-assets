@@ -83,8 +83,8 @@ export function LatencyChart({points, errors}: {points: LatencyPoint[]; errors: 
         <button className="link" onClick={() => setShowTable(!showTable)}>{showTable ? 'Show chart' : 'Show table'}</button>
       </header>
       <p className="fine">
-        Time from a row's MySQL <code>updated_at</code> to the Iceberg snapshot commit (S3 file) that first contains it,
-        for the newest replicated record in each table. One point per Tableflow commit.
+        Time from a row's MySQL <code>updated_at</code> to the commit of the Iceberg snapshot that published it.
+        One point per Tableflow commit, at the longest wait among the inserts and updates it published.
       </p>
 
       <div className="tiles">
@@ -104,17 +104,18 @@ export function LatencyChart({points, errors}: {points: LatencyPoint[]; errors: 
       {showTable ? (
         <div className="table-wrap">
           <table className="data">
-            <thead><tr><th>Table</th><th>Record updated</th><th>Snapshot committed</th><th>Latency</th></tr></thead>
+            <thead><tr><th>Table</th><th>Rows</th><th>Oldest row updated</th><th>Snapshot committed</th><th>Latency (min–max)</th></tr></thead>
             <tbody>
               {[...points].reverse().slice(0, 200).map((p, i) => (
                 <tr key={i}>
                   <td>{p.table}</td>
+                  <td className="num">{p.records}</td>
                   <td>{new Date(p.recordAt).toLocaleTimeString()}</td>
                   <td>{new Date(p.committedAt).toLocaleTimeString()}</td>
-                  <td className="num">{fmtSecs(p.latencyMs)}</td>
+                  <td className="num">{fmtSecs(p.minLatencyMs)}–{fmtSecs(p.latencyMs)}</td>
                 </tr>
               ))}
-              {points.length === 0 && <tr><td colSpan={4} className="empty">No measurements yet</td></tr>}
+              {points.length === 0 && <tr><td colSpan={5} className="empty">No measurements yet</td></tr>}
             </tbody>
           </table>
         </div>

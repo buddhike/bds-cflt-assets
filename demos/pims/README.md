@@ -21,7 +21,7 @@ PIMS is a [Wails](https://wails.io) (Go + React) app that:
 2. **Simulates a clinic**: patient registrations, bookings, check-ins,
    walk-ins, no-shows, cancellations and visit completions, at a rate you set.
 3. **Charts latency**: the time from a row's MySQL `updated_at` to the
-   Iceberg snapshot commit that first contains it, per table.
+   commit of the Iceberg snapshot that published it, per table.
 
 ## Prerequisites
 
@@ -71,16 +71,30 @@ Everything there is user-only (0700/0600).
 
 Every 30 seconds PIMS runs the DuckDB CLI in its container. DuckDB attaches the
 Tableflow Iceberg REST catalog with the Tableflow API key and, for each table,
-reads:
+lists the Iceberg snapshots committed since the last poll. It compares each new
+snapshot with the one before it, matching rows on `(id, updated_at)`. The rows
+that are only in the new snapshot are the inserts and updates it published
+(MySQL bumps `updated_at` on every change), and each of them waited from its
+`updated_at` until the snapshot's commit time. The chart plots the longest of
+those waits, one point per snapshot; the table view also shows the shortest.
+Snapshots that publish no new rows, such as compaction, are skipped, and a
+table's first snapshot is only a baseline, since its rows may predate
+Tableflow being enabled.
 
-- the newest `updated_at` that has reached Iceberg, and
-- the commit time of the earliest Iceberg snapshot at or after it. That
-  snapshot is when the S3 data file holding that record was published.
-
-The difference covers the whole path: MySQL write, Debezium capture, Kafka,
+That wait covers the whole path: MySQL write, Debezium capture, Kafka,
 Tableflow materialisation and S3 commit. `updated_at` is set by MySQL inside
 Docker, so the result depends on the Docker VM clock staying in sync with
 the host.
+
+For each table that compared snapshots, the log shows a `Ran latency query`
+line with the wall time of each DuckDB run and DuckDB's own figures: query
+time, operator time (DuckDB's `CPU_TIME`, which includes scans waiting on
+reads), rows scanned, peak memory, and the HTTP requests, time and bytes for
+the catalog and for storage, read from DuckDB's request log.
+
+Each comparison reads both versions of the table in full, so a poll's cost
+grows with the table. That is fine for a demo run; a long run would need to
+limit the comparison to recent `updated_at` values.
 
 ## Project layout
 

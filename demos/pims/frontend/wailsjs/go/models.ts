@@ -23,11 +23,16 @@ export namespace latency {
 	
 	export class Point {
 	    table: string;
+	    snapshotId: number;
+	    records: number;
 	    // Go type: time
 	    recordAt: any;
 	    // Go type: time
+	    newestAt: any;
+	    // Go type: time
 	    committedAt: any;
 	    latencyMs: number;
+	    minLatencyMs: number;
 	    // Go type: time
 	    observedAt: any;
 	
@@ -38,9 +43,13 @@ export namespace latency {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.table = source["table"];
+	        this.snapshotId = source["snapshotId"];
+	        this.records = source["records"];
 	        this.recordAt = this.convertValues(source["recordAt"], null);
+	        this.newestAt = this.convertValues(source["newestAt"], null);
 	        this.committedAt = this.convertValues(source["committedAt"], null);
 	        this.latencyMs = source["latencyMs"];
+	        this.minLatencyMs = source["minLatencyMs"];
 	        this.observedAt = this.convertValues(source["observedAt"], null);
 	    }
 	
