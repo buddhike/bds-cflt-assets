@@ -1,0 +1,55 @@
+# Publishes a GitHub release for every project whose release.md names a version
+# that has not been released yet.
+#
+# Convention: each project has a release.md at its root that contains only its
+# version, such as 1.2.3 (or 1.2.3-rc.1 for a pre-release). Bump it on main and
+# this workflow builds the project and publishes the release <project>-v<version>
+# with the binaries attached. Projects are told apart by directory name.
+#
+# A release is created only when its tag does not exist, so re-running a failed
+# run retries it and never releases the same version twice.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ['**/release.md']
+  # Re-run to retry a release whose build failed. Only main can release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Queue runs instead of cancelling one that is half way through a release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      wails: ${{ steps.detect.outputs.wails }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: detect
+        run: bash .github/scripts/detect-releases.sh
+
+  wails:
+    needs: detect
+    if: needs.detect.outputs.wails != '[]'
+    strategy:
+      # A broken build of one project must not block another project's release.
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect.outputs.wails) }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-wails.yml
+    with:
+      name: ${{ matrix.project.name }}
+      dir: ${{ matrix.project.dir }}
+      version: ${{ matrix.project.version }}
+      tag: ${{ matrix.project.tag }}
+      prerelease: ${{ matrix.project.prerelease }}
