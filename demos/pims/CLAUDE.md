@@ -14,6 +14,8 @@ PIMS (Patient Information Management System) is a demo that showcases Confluent 
 
 ## Commands
 
+Run these from `demos/pims`; this project lives in the `bds-cflt-assets` monorepo.
+
 ```sh
 wails dev                                   # run the app with live reload
 wails build                                 # build/bin/pims.app
@@ -55,5 +57,5 @@ Data path: `MySQL → Debezium (Kafka Connect, local) → CC Kafka topics (Avro 
 
 ## Conventions
 
-- Commit messages follow `.claude/skills/git-commit-message.md`; use the Go package name as the scope (`cli` for `main.go`/`app.go`).
-- Review Go changes with `.claude/agents/go-code-reviewer.md`.
+- Commit messages follow the `git-commit-message` skill (`.claude/skills/git-commit-message/SKILL.md` at the repository root). Prefix them with `pims: ` and use the Go package name as the scope (`cli` for `main.go`/`app.go`, `frontend` for the UI).
+- Review Go changes with the `go-code-reviewer` agent (`.claude/agents/go-code-reviewer.md` at the repository root).
