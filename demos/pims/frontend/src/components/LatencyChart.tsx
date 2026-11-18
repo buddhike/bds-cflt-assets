@@ -22,14 +22,15 @@ function fmtTime(t: number) {
   return new Date(t).toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit'});
 }
 
-/** niceTicks returns ~count round values covering [0, max]. */
+/** niceTicks returns ~count round values covering [0, max]; the last tick is at or above max. */
 function niceTicks(max: number, count = 4): number[] {
   if (max <= 0) return [0];
   const raw = max / count;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
   const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? raw;
+  const top = Math.ceil(max / step - 1e-9) * step;
   const ticks = [];
-  for (let v = 0; v <= max + step * 0.01; v += step) ticks.push(v);
+  for (let v = 0; v <= top + step * 0.01; v += step) ticks.push(v);
   return ticks;
 }
 
