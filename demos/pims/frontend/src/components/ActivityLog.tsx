@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import {LogEntry} from '../api';
 
-export function ActivityLog({logs}: {logs: LogEntry[]}) {
+export function ActivityLog({id, logs}: {id?: string; logs: LogEntry[]}) {
   const box = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
 
@@ -10,7 +10,7 @@ export function ActivityLog({logs}: {logs: LogEntry[]}) {
   }, [logs, follow]);
 
   return (
-    <section className="card log-card">
+    <section id={id} className="card log-card">
       <header className="card-head">
         <h2>Activity</h2>
         <label className="inline"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)}/> Follow</label>

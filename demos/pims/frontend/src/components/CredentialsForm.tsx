@@ -1,5 +1,6 @@
 import {FormEvent, useEffect, useState} from 'react';
 import {api, errorText} from '../api';
+import {Logo} from './Logo';
 
 // Regions where Confluent Cloud offers Standard clusters and Tableflow.
 // Any valid region code can still be typed in.
@@ -38,10 +39,25 @@ export function CredentialsForm({onSaved}: {onSaved: () => void}) {
   return (
     <main className="gate">
       <form className="card gate-card" onSubmit={submit}>
-        <h1>PIMS</h1>
+        <div className="brand">
+          <Logo className="brand-mark"/>
+          <h1>PIMS</h1>
+        </div>
         <p className="lede">
           Patient Information Management System: a demo of Debezium CDC from MySQL into Confluent Cloud Tableflow
           Iceberg tables, with end-to-end latency measured in DuckDB.
+        </p>
+
+        <p className="notice" role="note">
+          <svg className="notice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+               strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>
+            <path d="M12 9v4M12 17h.01"/>
+          </svg>
+          <span>
+            <strong>Don't use credentials that can reach production.</strong> PIMS creates and deletes Confluent
+            Cloud resources. Use an API key for a dedicated demo or sandbox organisation.
+          </span>
         </p>
 
         <label>

@@ -38,6 +38,8 @@ func main() {
 		Height:    860,
 		MinWidth:  960,
 		MinHeight: 640,
+		// Width and Height still apply when the window is un-maximised.
+		WindowStartState: options.Maximised,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

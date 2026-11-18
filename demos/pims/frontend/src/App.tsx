@@ -5,8 +5,10 @@ import {SetupSteps} from './components/SetupSteps';
 import {SimulationPanel} from './components/SimulationPanel';
 import {LatencyChart} from './components/LatencyChart';
 import {ActivityLog} from './components/ActivityLog';
+import {Logo} from './components/Logo';
 import {events} from './api';
 
+const ACTIVITY_ID = 'activity';
 const MAX_LOGS = 500;
 const MAX_POINTS = 5000;
 
@@ -58,16 +60,30 @@ export default function App() {
   const busy = state.busy;
   const stepsStarted = state.steps.some((s) => s.status !== 'pending');
   const schemaReady = state.steps.find((s) => s.id === 'schema')?.status === 'done' || state.sim.running || state.sim.events > 0;
+  const errorCount = logs.filter((l) => l.level.toUpperCase() === 'ERROR').length;
+  const warnCount = logs.filter((l) => l.level.toUpperCase() === 'WARN').length;
 
   return (
     <div className="app">
       <header className="topbar">
-        <div>
-          <h1>PIMS</h1>
-          <span className="sub">Debezium → Confluent Cloud → Tableflow (Iceberg) → DuckDB · {state.awsRegion}</span>
+        <div className="brand">
+          <Logo className="brand-mark"/>
+          <div className="brand-text">
+            <h1>PIMS</h1>
+            <span className="sub">
+              Streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud
+              Tableflow, and measuring how fresh they are · {state.awsRegion}
+            </span>
+          </div>
         </div>
         <div className="actions">
           {busy && <span className="pill pill-on">● {busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
+          <button onClick={() => document.getElementById(ACTIVITY_ID)?.scrollIntoView({block: 'start'})}>
+            Activity log
+            {errorCount > 0
+              ? <span className="badge-count" aria-label={`${errorCount} errors`}>{errorCount}</span>
+              : warnCount > 0 && <span className="badge-count badge-warn" aria-label={`${warnCount} warnings`}>{warnCount}</span>}
+          </button>
           <button className="primary" disabled={!!busy} onClick={() => run(api.setup)}>
             {stepsStarted ? 'Re-run setup' : 'Set up demo'}
           </button>
@@ -92,7 +108,7 @@ export default function App() {
         </section>
         <SimulationPanel sim={state.sim} limits={state.limits} ready={schemaReady}/>
         <LatencyChart points={points} errors={tableErrors}/>
-        <ActivityLog logs={logs}/>
+        <ActivityLog id={ACTIVITY_ID} logs={logs}/>
       </div>
     </div>
   );
