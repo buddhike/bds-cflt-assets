@@ -129,6 +129,15 @@ limit the comparison to recent `updated_at` values.
 | `internal/latency` | DuckDB queries against the Tableflow Iceberg catalog |
 | `internal/config`, `logging`, `retry` | Credentials and workspace, slog tee to the UI, backoff |
 
+## Releasing
+
+`release.md` holds the version of the latest release and nothing else. Bump it
+on `main` and the repository's release workflow builds the app for macOS
+(universal), Windows and Linux, then publishes the GitHub release `pims-v<version>`
+with those binaries and a `SHA256SUMS` file. The builds are not signed with a
+paid certificate, so macOS and Windows ask for approval on first launch. The
+release notes say how.
+
 ## Tests
 
 ```sh
