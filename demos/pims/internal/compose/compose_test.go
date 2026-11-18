@@ -127,6 +127,20 @@ func TestScrubRedactsAndTruncates(t *testing.T) {
 	}
 }
 
+// A failure must not blame the first word of the command: callers wrap the
+// program in others such as timeout, which would read as the cause.
+func TestExecErrorDoesNotNameTheCommand(t *testing.T) {
+	p := newTestProject(t)
+	p.docker = "false" // exits 1, whatever it is asked
+	_, err := p.Exec(context.Background(), ServiceDuckDB, nil, nil, "timeout", "--signal=KILL", "5s", "duckdb")
+	if err == nil {
+		t.Fatal("Exec must report the command's failure")
+	}
+	if got := err.Error(); strings.Contains(got, "timeout") || !strings.Contains(got, ServiceDuckDB) {
+		t.Fatalf("error = %q, want the service and not the command", got)
+	}
+}
+
 func TestExecRequiresCommand(t *testing.T) {
 	if _, err := newTestProject(t).Exec(context.Background(), ServiceDuckDB, nil, nil); err == nil {
 		t.Fatal("Exec without a command must fail")

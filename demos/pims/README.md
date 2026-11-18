@@ -73,9 +73,10 @@ The **Data flow** panel under the header shows this path as a diagram, with the
 same explanation, and its arrows animate while the simulator runs.
 
 Every 30 seconds PIMS runs the DuckDB CLI in its container. DuckDB attaches the
-Tableflow Iceberg REST catalog with the Tableflow API key and, for each table,
-lists the Iceberg snapshots committed since the last poll. It compares each new
-snapshot with the one before it, matching rows on `(id, updated_at)`. The rows
+Tableflow Iceberg REST catalog with the Tableflow API key and, in one run for
+all the tables, lists the Iceberg snapshots committed since the last poll. It
+then compares each new snapshot with the one before it, matching rows on
+`(id, updated_at)`. The rows
 that are only in the new snapshot are the inserts and updates it published
 (MySQL bumps `updated_at` on every change), and each of them waited from its
 `updated_at` until the snapshot's commit time. The chart plots the longest of
@@ -89,11 +90,25 @@ Tableflow materialisation and S3 commit. `updated_at` is set by MySQL inside
 Docker, so the result depends on the Docker VM clock staying in sync with
 the host.
 
-For each table that compared snapshots, the log shows a `Ran latency query`
-line with the wall time of each DuckDB run and DuckDB's own figures: query
-time, operator time (DuckDB's `CPU_TIME`, which includes scans waiting on
-reads), rows scanned, peak memory, and the HTTP requests, time and bytes for
-the catalog and for storage, read from DuckDB's request log.
+Each comparison is a DuckDB run of its own, and the tables are compared in
+parallel. A poll therefore takes as long as its slowest table, and a run that
+times out after 90 seconds loses only its own snapshot. A table's snapshots
+are measured in order, at most five per poll, so a backlog drains over several
+polls. A comparison that fails is retried on the next poll and skipped after
+three failed attempts.
+
+DuckDB runs under the container's own `timeout`, which kills it five seconds
+after PIMS gives up on the run. Without it a timed-out run would carry on in
+the container, still reading from storage and slowing the runs that follow.
+
+Each comparison logs a `Ran latency query` line with the table, the snapshot
+id, the wall time of its DuckDB run and DuckDB's own figures: query time,
+operator time (DuckDB's `CPU_TIME`, which includes scans waiting on reads),
+rows scanned, peak memory, and the HTTP requests, time and bytes for the
+catalog and for storage, read from DuckDB's request log. A comparison that
+fails logs `Snapshot comparison failed` with the error instead, and a timeout
+has no DuckDB figures, since DuckDB prints them last. The snapshot listing
+logs its figures at debug level as `Listed table snapshots`.
 
 Each comparison reads both versions of the table in full, so a poll's cost
 grows with the table. That is fine for a demo run; a long run would need to

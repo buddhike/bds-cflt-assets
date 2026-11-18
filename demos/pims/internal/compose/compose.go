@@ -233,7 +233,9 @@ func (p *Project) Exec(ctx context.Context, service string, stdin io.Reader, red
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 	if err := c.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("exec %s in %s: %w: %s", cmd[0], service, err, scrub(stderr.String(), redact))
+		// The command is not named: callers may wrap the program in another
+		// such as timeout, which would then read as the cause of the failure.
+		return stdout.Bytes(), fmt.Errorf("exec in %s: %w: %s", service, err, scrub(stderr.String(), redact))
 	}
 	return stdout.Bytes(), nil
 }

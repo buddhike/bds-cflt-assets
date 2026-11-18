@@ -14,6 +14,8 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,44 +29,120 @@ var testCatalog = Catalog{
 	Namespace: "lkc-abc123",
 }
 
-// fakeExec answers each table's snapshot listing and snapshot comparison
-// scripts from per-table outputs, and records every script it was sent.
+var (
+	// listedTable matches the table name in each of a listing script's
+	// statements.
+	listedTable = regexp.MustCompile(`'([a-z_]+)' AS table_name, snapshot_id`)
+	// comparedSnapshot matches the table and snapshot a comparison script
+	// measures: the first table version in it is the snapshot itself.
+	comparedSnapshot = regexp.MustCompile(`\."([a-z_]+)" AT \(VERSION => (\d+)\)`)
+)
+
+// fakeExec answers the snapshot listing and each snapshot comparison from
+// per-table outputs, and records every script it was sent. Tables are
+// compared in parallel, so it is safe for concurrent use. The maps are read
+// during a poll, so tests set them between polls.
 type fakeExec struct {
-	list, diff       map[string]string
-	listErr, diffErr map[string]error
-	// hang makes the table's comparison wait for its deadline.
-	hang    map[string]bool
+	mu      sync.Mutex
 	scripts []string
+	// cmds is the command each script was run with.
+	cmds [][]string
+
+	// list is each table's snapshot listing output. A table with no entry
+	// prints nothing, as when its listing fails.
+	list map[string]string
+	// listErr is the error of the listing run.
+	listErr error
+	// diff is each table's comparison output, one line per snapshot. A
+	// comparison prints the lines for its own snapshot and any stats line.
+	diff    map[string]string
+	diffErr map[string]error
+	// hang makes the table's comparisons wait for their deadline; hangOn does
+	// the same for the snapshots with these ids.
+	hang   map[string]bool
+	hangOn map[int64]bool
+	// onCompare is called when a comparison starts.
+	onCompare func()
+	// rendezvous, when positive, holds every comparison until that many have
+	// started, which only happens if they run in parallel.
+	rendezvous int
+	started    int
+	ready      chan struct{}
 }
 
 func newFakeExec() *fakeExec {
-	return &fakeExec{list: map[string]string{}, diff: map[string]string{}, listErr: map[string]error{}, diffErr: map[string]error{}, hang: map[string]bool{}}
+	return &fakeExec{list: map[string]string{}, diff: map[string]string{}, diffErr: map[string]error{}, hang: map[string]bool{}, hangOn: map[int64]bool{}}
 }
 
-func (f *fakeExec) Exec(ctx context.Context, _ string, stdin io.Reader, _ []string, _ ...string) ([]byte, error) {
+func (f *fakeExec) Exec(ctx context.Context, _ string, stdin io.Reader, _ []string, cmd ...string) ([]byte, error) {
 	b, _ := io.ReadAll(stdin)
 	script := string(b)
+	f.mu.Lock()
 	f.scripts = append(f.scripts, script)
-	table := regexp.MustCompile(`\."([a-z_]+)"`).FindStringSubmatch(script[strings.Index(script, ".mode json"):])[1]
-	if strings.Contains(script, "EXCEPT") {
-		if f.hang[table] {
-			<-ctx.Done()
+	f.cmds = append(f.cmds, cmd)
+	f.mu.Unlock()
+
+	if !strings.Contains(script, "EXCEPT") {
+		var out strings.Builder
+		for _, m := range listedTable.FindAllStringSubmatch(script, -1) {
+			out.WriteString(f.list[m[1]])
+		}
+		return []byte(out.String()), f.listErr
+	}
+
+	m := comparedSnapshot.FindStringSubmatch(script)
+	table := m[1]
+	id, _ := strconv.ParseInt(m[2], 10, 64)
+	if f.onCompare != nil {
+		f.onCompare()
+	}
+	if f.rendezvous > 0 {
+		f.mu.Lock()
+		if f.ready == nil {
+			f.ready = make(chan struct{})
+		}
+		if f.started++; f.started == f.rendezvous {
+			close(f.ready)
+		}
+		ready := f.ready
+		f.mu.Unlock()
+		select {
+		case <-ready:
+		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return []byte(f.diff[table]), f.diffErr[table]
 	}
-	return []byte(f.list[table]), f.listErr[table]
-}
-
-// diffs counts the comparison scripts sent and the snapshots in them.
-func (f *fakeExec) diffs() (scripts, snapshots int) {
-	for _, s := range f.scripts {
-		if n := strings.Count(s, "EXCEPT"); n > 0 {
-			scripts++
-			snapshots += n
+	if f.hang[table] || f.hangOn[id] {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	var out strings.Builder
+	for _, line := range strings.SplitAfter(f.diff[table], "\n") {
+		if strings.Contains(line, fmt.Sprintf(`"snapshot_id":%d,`, id)) || strings.Contains(line, `"row_kind":"stats"`) {
+			out.WriteString(line)
 		}
 	}
-	return scripts, snapshots
+	return []byte(out.String()), f.diffErr[table]
+}
+
+// lists counts the snapshot listing scripts sent.
+func (f *fakeExec) lists() (n int) {
+	for _, s := range f.scripts {
+		if !strings.Contains(s, "EXCEPT") {
+			n++
+		}
+	}
+	return n
+}
+
+// diffs counts the comparison scripts sent. Each compares one snapshot.
+func (f *fakeExec) diffs() (n int) {
+	for _, s := range f.scripts {
+		if strings.Contains(s, "EXCEPT") {
+			n++
+		}
+	}
+	return n
 }
 
 func TestCatalogValidate(t *testing.T) {
@@ -84,22 +162,27 @@ func TestCatalogValidate(t *testing.T) {
 	if _, err := NewDuckDB(&fakeExec{}, "duckdb", testCatalog, []string{"bad-name"}); err == nil {
 		t.Fatal("table names with dashes must be rejected")
 	}
+	if _, err := NewDuckDB(&fakeExec{}, "duckdb", testCatalog, []string{"patients", "visits", "patients"}); err == nil {
+		t.Fatal("a table listed twice must be rejected, since its state is owned by one goroutine")
+	}
 }
 
 func TestScriptQuotesSecretAndHidesSetupOutput(t *testing.T) {
-	d, err := NewDuckDB(newFakeExec(), "duckdb", testCatalog, []string{"patients"})
+	d, err := NewDuckDB(newFakeExec(), "duckdb", testCatalog, []string{"patients", "visits"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := d.snapshotsScript("patients")
+	s := d.snapshotsScript()
 	if !strings.Contains(s, `CLIENT_SECRET 'tf''secret'`) {
 		t.Fatalf("secret not escaped as a SQL literal:\n%s", s)
 	}
 	if strings.Index(s, ".mode trash") > strings.Index(s, "CREATE SECRET") || strings.Index(s, ".mode json") < strings.Index(s, "ATTACH") {
 		t.Fatalf("setup must run in trash mode before json output:\n%s", s)
 	}
-	if !strings.Contains(s, `FROM iceberg_snapshots(tableflow."lkc-abc123"."patients")`) {
-		t.Fatalf("snapshot listing must read the table's snapshots:\n%s", s)
+	for _, table := range []string{"patients", "visits"} {
+		if !strings.Contains(s, fmt.Sprintf(`FROM iceberg_snapshots(tableflow."lkc-abc123"."%s")`, table)) {
+			t.Fatalf("snapshot listing must read the %s snapshots:\n%s", table, s)
+		}
 	}
 }
 
@@ -128,11 +211,19 @@ func seqRange(from, to int64) []int64 {
 	return s
 }
 
+// cursorIs checks the cursor the table's statement in the listing script
+// uses.
 func cursorIs(t *testing.T, d *DuckDB, table string, seq int64) {
 	t.Helper()
-	if !strings.Contains(d.snapshotsScript(table), fmt.Sprintf("sequence_number <= %d)", seq)) {
-		t.Fatalf("%s cursor = %d, want %d", table, d.cursor[table], seq)
+	for _, stmt := range strings.Split(d.snapshotsScript(), "\n") {
+		if strings.Contains(stmt, fmt.Sprintf("SELECT '%s' AS table_name", table)) {
+			if !strings.Contains(stmt, fmt.Sprintf("sequence_number <= %d)", seq)) {
+				t.Fatalf("%s cursor, want %d in:\n%s", table, seq, stmt)
+			}
+			return
+		}
 	}
+	t.Fatalf("no listing statement for %s", table)
 }
 
 func TestQueryMeasuresEachNewSnapshotOnce(t *testing.T) {
@@ -155,16 +246,21 @@ func TestQueryMeasuresEachNewSnapshotOnce(t *testing.T) {
 	cursorIs(t, d, "patients", 2)
 
 	// Snapshot 3 publishes two rows; snapshot 4 is a compaction with none.
+	// Each is compared with the snapshot before it, in a run of its own.
 	fe.list["patients"] = snaps("patients", 2, 3, 4)
 	fe.diff["patients"] = diffOut("patients", 103, 2, 120000, 170000) + diffOut("patients", 104, 0, 0, 0)
 	res, err = d.Query(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	diff := fe.scripts[2]
-	for _, want := range []string{"AT (VERSION => 103)", "AT (VERSION => 102)", "AT (VERSION => 104)"} {
-		if !strings.Contains(diff, want) {
-			t.Fatalf("comparison script missing %q:\n%s", want, diff)
+	if len(fe.scripts) != 4 {
+		t.Fatalf("scripts = %d, want a listing and one comparison per snapshot", len(fe.scripts))
+	}
+	for i, want := range [][2]string{{"AT (VERSION => 103)", "AT (VERSION => 102)"}, {"AT (VERSION => 104)", "AT (VERSION => 103)"}} {
+		for _, w := range want {
+			if !strings.Contains(fe.scripts[2+i], w) {
+				t.Fatalf("comparison script %d missing %q:\n%s", i, w, fe.scripts[2+i])
+			}
 		}
 	}
 	if len(res.Points) != 1 {
@@ -179,8 +275,29 @@ func TestQueryMeasuresEachNewSnapshotOnce(t *testing.T) {
 	// Nothing new: no comparison runs.
 	fe.list["patients"] = snaps("patients", 4)
 	res, err = d.Query(context.Background())
-	if err != nil || len(res.Points) != 0 || len(fe.scripts) != 4 {
+	if err != nil || len(res.Points) != 0 || len(fe.scripts) != 5 {
 		t.Fatalf("idle poll: res=%+v err=%v scripts=%d", res, err, len(fe.scripts))
+	}
+}
+
+func TestQueryListsEveryTableInOneRun(t *testing.T) {
+	fe := newFakeExec()
+	tables := []string{"patients", "visits", "appointments"}
+	for _, table := range tables {
+		fe.list[table] = snaps(table, 1)
+	}
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, tables)
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fe.lists() != 1 || fe.diffs() != 0 {
+		t.Fatalf("lists=%d diffs=%d, want one listing run for all tables", fe.lists(), fe.diffs())
+	}
+	for _, table := range tables {
+		if !strings.Contains(fe.scripts[0], fmt.Sprintf(`"%s")`, table)) {
+			t.Fatalf("listing misses %s:\n%s", table, fe.scripts[0])
+		}
+		cursorIs(t, d, table, 1)
 	}
 }
 
@@ -194,8 +311,8 @@ func TestQueryReportsStatsPerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Stats) != 1 || res.Stats[0].Compare != nil || res.Stats[0].List.StorageBytes != 65536 || res.Stats[0].List.QueryMs != 12.5 {
-		t.Fatalf("baseline stats = %+v, want the listing's figures and no comparison", res.Stats)
+	if len(res.Compares) != 0 || res.List.StorageBytes != 65536 || res.List.QueryMs != 12.5 {
+		t.Fatalf("baseline stats = %+v, want the listing's figures and no comparison", res)
 	}
 	if len(res.Errors) != 0 {
 		t.Fatalf("the stats row must not be read as a snapshot: %+v", res.Errors)
@@ -207,9 +324,11 @@ func TestQueryReportsStatsPerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := res.Stats[0]
-	if st.Snapshots != 1 || st.Compare == nil || st.Compare.StorageRequests != 9 || len(res.Points) != 1 {
-		t.Fatalf("stats = %+v, points = %+v", st, res.Points)
+	if len(res.Compares) != 1 || len(res.Points) != 1 {
+		t.Fatalf("compares = %+v, points = %+v", res.Compares, res.Points)
+	}
+	if c := res.Compares[0]; c.Table != "patients" || c.SnapshotID != 102 || c.Err != nil || c.Run.StorageRequests != 9 {
+		t.Fatalf("compare = %+v", c)
 	}
 	for _, script := range fe.scripts {
 		if !strings.Contains(script, statsSetup) || !strings.HasSuffix(script, statsSQL("https://tableflow.us-east-1.aws.confluent.cloud/")) {
@@ -218,26 +337,37 @@ func TestQueryReportsStatsPerRun(t *testing.T) {
 	}
 }
 
-func TestMonitorLogsQueryStats(t *testing.T) {
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	listOnly := QueryStats{Table: "visits", List: RunStats{Wall: time.Second}}
-	compared := QueryStats{Table: "patients", Snapshots: 2, List: RunStats{Wall: time.Second},
-		Compare: &RunStats{Wall: 2 * time.Second, StorageBytes: 4096, StorageHTTPMs: 900}}
-	q := &seqQuerier{results: []Result{{Stats: []QueryStats{listOnly, compared}}}}
-	m := NewMonitor(q, time.Hour, log)
-	ctx, cancel := context.WithCancel(context.Background())
-	m.Run(ctx, func(Result) { cancel() })
-
-	out := buf.String()
-	if strings.Contains(out, "table=visits") {
-		t.Fatalf("a poll that only listed snapshots must log at debug level:\n%s", out)
+func TestMonitorLogsRuns(t *testing.T) {
+	res := Result{
+		List: RunStats{Wall: time.Second},
+		Compares: []CompareStats{
+			{Table: "patients", SnapshotID: 102, Run: RunStats{Wall: 2 * time.Second, StorageBytes: 4096, StorageHTTPMs: 900}},
+			{Table: "visits", SnapshotID: 203, Run: RunStats{Wall: 90 * time.Second}, Err: errors.New("duckdb query: context deadline exceeded")},
+		},
 	}
-	for _, want := range []string{`msg="Ran latency query"`, "table=patients", "snapshots=2", "duration_ms=3000",
-		"list.wall_ms=1000", "compare.wall_ms=2000", "compare.storage_bytes=4096", "compare.storage_http_ms=900"} {
+	runMonitor := func(level slog.Level) string {
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level}))
+		m := NewMonitor(&seqQuerier{results: []Result{res}}, time.Hour, log)
+		ctx, cancel := context.WithCancel(context.Background())
+		m.Run(ctx, func(Result) { cancel() })
+		return buf.String()
+	}
+
+	out := runMonitor(slog.LevelInfo)
+	if strings.Contains(out, "Listed table snapshots") {
+		t.Fatalf("the snapshot listing runs every poll, so it must log at debug level:\n%s", out)
+	}
+	for _, want := range []string{
+		`level=INFO msg="Ran latency query"`, "table=patients snapshot_id=102", "compare.wall_ms=2000", "compare.storage_bytes=4096", "compare.storage_http_ms=900",
+		`level=WARN msg="Snapshot comparison failed"`, "table=visits snapshot_id=203", "compare.wall_ms=90000", `error="duckdb query: context deadline exceeded"`,
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log missing %q:\n%s", want, out)
 		}
+	}
+	if out := runMonitor(slog.LevelDebug); !strings.Contains(out, `msg="Listed table snapshots"`) || !strings.Contains(out, "list.wall_ms=1000") {
+		t.Fatalf("debug log must show the listing's figures:\n%s", out)
 	}
 }
 
@@ -261,6 +391,9 @@ func TestQueryRetriesThenSkipsFailedSnapshot(t *testing.T) {
 		if len(res.Points) != 0 || len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error, "comparing snapshot 102") {
 			t.Fatalf("attempt %d: a failed snapshot must hold the table's later ones back: %+v", i, res)
 		}
+		if len(res.Compares) != 1 || res.Compares[0].Err == nil {
+			t.Fatalf("attempt %d: compares = %+v, want the failed run reported", i, res.Compares)
+		}
 		cursorIs(t, d, "patients", 1)
 	}
 
@@ -277,11 +410,85 @@ func TestQueryRetriesThenSkipsFailedSnapshot(t *testing.T) {
 	cursorIs(t, d, "patients", 3)
 }
 
+func TestQueryResetsFailureCountAfterASuccess(t *testing.T) {
+	fe := newFakeExec()
+	fe.list["patients"] = snaps("patients", 1)
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, []string{"patients"})
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot 102 fails once and is then measured.
+	fe.list["patients"] = snaps("patients", 1, 2)
+	fe.diffErr["patients"] = errors.New("exit status 1: IO Error: unreadable")
+	if res, err := d.Query(context.Background()); err != nil || len(res.Points) != 0 || len(res.Errors) != 1 {
+		t.Fatalf("first attempt: res=%+v err=%v", res, err)
+	}
+	fe.diff["patients"] = diffOut("patients", 102, 1, 60000, 60000)
+	if res, err := d.Query(context.Background()); err != nil || len(res.Points) != 1 {
+		t.Fatalf("second attempt: res=%+v err=%v", res, err)
+	}
+	cursorIs(t, d, "patients", 2)
+
+	// Snapshot 103 fails fewer times than maxAttempts. The earlier failure of
+	// 102 must not count against it, or it would be skipped too soon.
+	fe.list["patients"] = snaps("patients", 2, 3)
+	fe.diff["patients"] = ""
+	for i := 1; i < maxAttempts; i++ {
+		res, err := d.Query(context.Background())
+		if err != nil || len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error, "comparing snapshot 103") {
+			t.Fatalf("attempt %d: res=%+v err=%v, want 103 held back, not skipped", i, res, err)
+		}
+		cursorIs(t, d, "patients", 2)
+	}
+}
+
+func TestQueryKeepsProgressWhenASnapshotTimesOut(t *testing.T) {
+	fe := newFakeExec()
+	fe.list["patients"] = snaps("patients", 1)
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, []string{"patients"})
+	d.timeout = 250 * time.Millisecond
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot 103 hangs. 102 has its own run, so it is still measured, and
+	// 104 waits behind 103 so the table is measured in order.
+	fe.list["patients"] = snaps("patients", 1, 2, 3, 4)
+	fe.diff["patients"] = diffOut("patients", 102, 1, 60000, 60000) + diffOut("patients", 103, 1, 120000, 120000) + diffOut("patients", 104, 1, 180000, 180000)
+	fe.hangOn[103] = true
+	res, err := d.Query(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Points) != 1 || res.Points[0].SnapshotID != 102 {
+		t.Fatalf("points = %+v, want 102 kept although 103 timed out", res.Points)
+	}
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error, "comparing snapshot 103") || !strings.Contains(res.Errors[0].Error, "deadline exceeded") {
+		t.Fatalf("errors = %+v, want 103 reported as timed out", res.Errors)
+	}
+	if fe.diffs() != 2 {
+		t.Fatalf("compared %d snapshots, want 102 and 103 only", fe.diffs())
+	}
+	cursorIs(t, d, "patients", 2)
+
+	// The next poll resumes at 103 instead of redoing 102.
+	delete(fe.hangOn, 103)
+	res, err = d.Query(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Points) != 2 || res.Points[0].SnapshotID != 103 || res.Points[1].SnapshotID != 104 || len(res.Errors) != 0 {
+		t.Fatalf("res = %+v, want 103 and 104 measured", res)
+	}
+	cursorIs(t, d, "patients", 4)
+}
+
 func TestQueryIsolatesTables(t *testing.T) {
 	fe := newFakeExec()
 	tables := []string{"patients", "visits", "appointments"}
 	d, _ := NewDuckDB(fe, "duckdb", testCatalog, tables)
-	d.timeout = 20 * time.Millisecond
+	d.timeout = 100 * time.Millisecond
 	fe.list["patients"] = snaps("patients", 1)
 	fe.list["visits"] = snaps("visits", 1)
 	fe.list["appointments"] = "[]\n"
@@ -311,8 +518,71 @@ func TestQueryIsolatesTables(t *testing.T) {
 			t.Fatalf("error for %s = %q, want %q", e.Table, e.Error, want[e.Table])
 		}
 	}
+	if fe.lists() != 2 {
+		t.Fatalf("listing runs = %d, want one per poll", fe.lists())
+	}
 	cursorIs(t, d, "patients", 1)
 	cursorIs(t, d, "visits", 2)
+}
+
+func TestQueryComparesTablesInParallel(t *testing.T) {
+	fe := newFakeExec()
+	tables := []string{"patients", "visits", "appointments"}
+	for _, table := range tables {
+		fe.list[table] = snaps(table, 1)
+	}
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, tables)
+	d.timeout = 2 * time.Second
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// No comparison finishes until all three have started, so the poll only
+	// completes if the tables are compared at the same time.
+	fe.rendezvous = len(tables)
+	for _, table := range tables {
+		fe.list[table] = snaps(table, 1, 2)
+		fe.diff[table] = diffOut(table, 102, 1, 60000, 60000)
+	}
+	res, err := d.Query(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 0 || len(res.Points) != len(tables) {
+		t.Fatalf("res = %+v, want a point per table", res)
+	}
+	for i, table := range tables {
+		if res.Points[i].Table != table {
+			t.Fatalf("points = %+v, want them in table order", res.Points)
+		}
+	}
+}
+
+func TestQueryReportsTableThatCannotBeListed(t *testing.T) {
+	fe := newFakeExec()
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, []string{"patients", "appointments"})
+	fe.list["patients"] = snaps("patients", 1)
+	fe.list["appointments"] = snaps("appointments", 1)
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The CLI carries on after the failed statement, so patients' listing
+	// still arrives, and the poll's error is not blamed on it.
+	delete(fe.list, "appointments")
+	fe.list["patients"] = snaps("patients", 1, 2)
+	fe.diff["patients"] = diffOut("patients", 102, 1, 60000, 60000)
+	fe.listErr = errors.New("exit status 1: Catalog Error: Table appointments does not exist")
+	res, err := d.Query(context.Background())
+	if err != nil {
+		t.Fatalf("Query() = %v, want the table's error and the others' results", err)
+	}
+	if len(res.Points) != 1 || res.Points[0].Table != "patients" {
+		t.Fatalf("points = %+v, want patients measured", res.Points)
+	}
+	if len(res.Errors) != 1 || res.Errors[0].Table != "appointments" || !strings.Contains(res.Errors[0].Error, "does not exist") {
+		t.Fatalf("errors = %+v, want appointments' listing error", res.Errors)
+	}
 }
 
 func TestQueryCapsSnapshotsPerPoll(t *testing.T) {
@@ -333,7 +603,7 @@ func TestQueryCapsSnapshotsPerPoll(t *testing.T) {
 	if _, err := d.Query(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, n := fe.diffs(); n != maxSnapshotsPerPoll {
+	if n := fe.diffs(); n != maxSnapshotsPerPoll {
 		t.Fatalf("compared %d snapshots, want %d", n, maxSnapshotsPerPoll)
 	}
 	cursorIs(t, d, "patients", int64(1+maxSnapshotsPerPoll))
@@ -341,7 +611,7 @@ func TestQueryCapsSnapshotsPerPoll(t *testing.T) {
 	if _, err := d.Query(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, n := fe.diffs(); n != backlog {
+	if n := fe.diffs(); n != backlog {
 		t.Fatalf("compared %d snapshots over two polls, want %d", n, backlog)
 	}
 }
@@ -361,7 +631,7 @@ func TestQueryRestartsAfterExpiredSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, n := fe.diffs(); n != 1 || !strings.Contains(fe.scripts[len(fe.scripts)-1], "AT (VERSION => 105)") {
+	if n := fe.diffs(); n != 1 || !strings.Contains(fe.scripts[len(fe.scripts)-1], "AT (VERSION => 105)") {
 		t.Fatalf("want only 106 compared with 105:\n%s", fe.scripts[len(fe.scripts)-1])
 	}
 	if len(res.Points) != 1 || res.Points[0].SnapshotID != 106 {
@@ -372,19 +642,41 @@ func TestQueryRestartsAfterExpiredSnapshots(t *testing.T) {
 
 func TestQueryFailsWhenNothingSucceeded(t *testing.T) {
 	fe := newFakeExec()
-	fe.listErr["patients"] = errors.New("401 Unauthorized")
-	fe.listErr["visits"] = errors.New("401 Unauthorized")
+	fe.listErr = errors.New("401 Unauthorized")
 	d, _ := NewDuckDB(fe, "duckdb", testCatalog, []string{"patients", "visits"})
-	res, err := d.Query(context.Background())
+	_, err := d.Query(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("Query() = %v, want catalog error", err)
 	}
-	if len(res.Stats) != 2 {
-		t.Fatalf("stats = %+v, want the failed runs' timings kept", res.Stats)
+	if fe.lists() != 1 {
+		t.Fatalf("listing runs = %d, want a single run for both tables", fe.lists())
 	}
 	if !strings.Contains(fe.scripts[0], "CREATE SECRET") {
 		t.Fatal("script must be sent on stdin, not as arguments")
 	}
+}
+
+func TestQueryDoesNotCountShutdownAsAFailure(t *testing.T) {
+	fe := newFakeExec()
+	fe.list["patients"] = snaps("patients", 1)
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, []string{"patients"})
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The poll is cancelled as the comparison starts, so the cancellation
+	// lands in the comparison and not in the listing.
+	fe.list["patients"] = snaps("patients", 1, 2)
+	fe.hang["patients"] = true
+	ctx, cancel := context.WithCancel(context.Background())
+	fe.onCompare = cancel
+	if _, err := d.Query(ctx); !errors.Is(err, context.Canceled) || fe.diffs() != 1 {
+		t.Fatalf("Query() = %v after %d comparisons, want the cancellation of the first", err, fe.diffs())
+	}
+	if got := d.state["patients"].failures; got != 0 {
+		t.Fatalf("failures = %d, want a cancelled run not to count against the snapshot", got)
+	}
+	cursorIs(t, d, "patients", 1)
 }
 
 type seqQuerier struct {
@@ -417,6 +709,105 @@ func TestMonitorReportsEveryResult(t *testing.T) {
 	})
 	if len(got) != 3 {
 		t.Fatalf("got %d points, want 3: %+v", len(got), got)
+	}
+}
+
+func TestDuckDBCommandRoundsTheLimitUp(t *testing.T) {
+	for _, c := range []struct {
+		limit time.Duration
+		want  string
+	}{
+		{95 * time.Second, "95s"},
+		{250*time.Millisecond + killGrace, "6s"},
+		{time.Millisecond, "1s"},
+		{0, "1s"}, // timeout treats 0 as no limit at all
+	} {
+		got := duckdbCommand(c.limit)
+		want := []string{"timeout", "--signal=KILL", c.want, "duckdb", "-batch"}
+		if !slices.Equal(got, want) {
+			t.Errorf("duckdbCommand(%v) = %q, want %q", c.limit, got, want)
+		}
+	}
+}
+
+// TestQueryRunsEveryScriptUnderAContainerTimeout checks the container is
+// told to kill DuckDB shortly after the host gives up on it, for the listing
+// and the comparisons alike. Killing the docker client does not stop the
+// process it started.
+func TestQueryRunsEveryScriptUnderAContainerTimeout(t *testing.T) {
+	fe := newFakeExec()
+	fe.list["patients"] = snaps("patients", 1)
+	d, _ := NewDuckDB(fe, "duckdb", testCatalog, []string{"patients"})
+	d.timeout = 20 * time.Second
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fe.list["patients"] = snaps("patients", 1, 2)
+	fe.diff["patients"] = diffOut("patients", 102, 1, 1000, 1000)
+	if _, err := d.Query(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fe.cmds) != 3 {
+		t.Fatalf("ran %d scripts, want 2 listings and a comparison", len(fe.cmds))
+	}
+	want := []string{"timeout", "--signal=KILL", "25s", "duckdb", "-batch"}
+	for i, cmd := range fe.cmds {
+		if !slices.Equal(cmd, want) {
+			t.Errorf("script %d ran as %q, want %q", i, cmd, want)
+		}
+	}
+}
+
+// TestContainerKillsDuckDBWhenItsClientIsGone starts the real DuckDB image
+// on a query that would run for minutes, kills the docker client as a host
+// deadline would, and checks the container's own timeout still ends the
+// process. It needs the pims-duckdb image.
+func TestContainerKillsDuckDBWhenItsClientIsGone(t *testing.T) {
+	if err := exec.Command("docker", "image", "inspect", "pims-duckdb").Run(); err != nil {
+		t.Skip("pims-duckdb image not built")
+	}
+	name := fmt.Sprintf("pims-test-timeout-%d", time.Now().UnixNano())
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
+	running := func() bool {
+		out, err := exec.Command("docker", "ps", "-q", "--filter", "name=^"+name+"$").Output()
+		if err != nil {
+			t.Fatalf("docker ps: %v", err)
+		}
+		return len(bytes.TrimSpace(out)) > 0
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	args := append([]string{"run", "--rm", "-i", "--name", name, "pims-duckdb"}, duckdbCommand(5*time.Second)...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Stdin = strings.NewReader("SELECT sum(hash(i)) FROM range(100000000000) t(i);\n")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Cancel before waiting, so a failure below cannot leave Wait hanging on a
+	// client that is still attached.
+	defer func() { cancel(); cmd.Wait() }()
+
+	start := time.Now()
+	for !running() {
+		if time.Since(start) > 30*time.Second {
+			t.Fatal("container did not start")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	cancel() // kills the client only
+	killed := time.Now()
+	// The premise: the process outlives its client. If it is gone already, the
+	// limit ran out first or the client took it down, and what follows would
+	// pass without showing the timeout works.
+	time.Sleep(time.Second)
+	if !running() {
+		t.Fatal("container ended with its client, so the timeout was not what stopped it")
+	}
+	for running() {
+		if time.Since(killed) > 20*time.Second {
+			t.Fatal("DuckDB is still running in the container after its timeout")
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -453,7 +844,9 @@ func TestSQLRunsInDuckDB(t *testing.T) {
 		diffSQL("patients", 103, "tz3", "tz2"),
 		statsSQL("https://catalog.invalid/"),
 	}, "\n")
-	cmd := exec.Command("docker", "run", "--rm", "-i", "pims-duckdb", "duckdb", "-batch")
+	// Through the timeout wrapper the app uses: it must pass stdin and the exit
+	// status of a failed statement through.
+	cmd := exec.Command("docker", append([]string{"run", "--rm", "-i", "pims-duckdb"}, duckdbCommand(time.Minute)...)...)
 	cmd.Stdin = strings.NewReader(script)
 	cmd.Stderr = &bytes.Buffer{}
 	out, err := cmd.Output()

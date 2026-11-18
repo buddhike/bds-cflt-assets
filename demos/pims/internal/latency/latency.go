@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -100,30 +101,23 @@ type TableError struct {
 type Result struct {
 	Points []Point      `json:"points"`
 	Errors []TableError `json:"errors,omitempty"`
-	// Stats describes the DuckDB work behind the poll, one entry per table.
-	// It is logged, not sent to the UI.
-	Stats []QueryStats `json:"-"`
+	// List and Compares describe the DuckDB work behind the poll. They are
+	// logged, not sent to the UI.
+	//
+	// List is the one run that listed every table's snapshots. Compares has
+	// an entry for each snapshot comparison run, in table order.
+	List     RunStats       `json:"-"`
+	Compares []CompareStats `json:"-"`
 }
 
-// QueryStats describes the DuckDB work one poll did for a table.
-type QueryStats struct {
-	Table string
-	// Snapshots is how many snapshots were compared.
-	Snapshots int
-	// List is the snapshot listing run.
-	List RunStats
-	// Compare is the snapshot comparison run, nil when there was nothing
-	// to compare.
-	Compare *RunStats
-}
-
-// Duration is the wall time of all of the table's runs.
-func (s QueryStats) Duration() time.Duration {
-	d := s.List.Wall
-	if s.Compare != nil {
-		d += s.Compare.Wall
-	}
-	return d
+// CompareStats describes the DuckDB run that compared one snapshot with the
+// snapshot before it.
+type CompareStats struct {
+	Table      string
+	SnapshotID int64
+	Run        RunStats
+	// Err is why the run produced no measurement for the snapshot, or nil.
+	Err error
 }
 
 // RunStats describes one DuckDB CLI run. Wall is measured by PIMS and
@@ -180,22 +174,48 @@ type Execer interface {
 }
 
 const (
-	// maxSnapshotsPerPoll bounds the snapshots compared for a table in one
-	// poll, so a backlog cannot push a comparison past execTimeout. The rest
-	// are compared on later polls.
+	// maxSnapshotsPerPoll bounds the snapshots measured for a table in one
+	// poll, so a backlog cannot keep a poll's results from the UI for long.
+	// The rest are measured on later polls.
 	maxSnapshotsPerPoll = 5
 	// maxAttempts is how many polls may fail to compare a snapshot before it
 	// is skipped, so one unreadable snapshot cannot stall its table.
 	maxAttempts = 3
-	// defaultExecTimeout bounds each DuckDB run. Every table gets its own
-	// runs, so a slow table cannot starve the others.
+	// defaultExecTimeout bounds each DuckDB run. A comparison run covers one
+	// snapshot, and tables run in parallel, so a slow snapshot or table
+	// cannot starve the others or discard their results.
 	defaultExecTimeout = 90 * time.Second
+	// killGrace is how far the container's own deadline trails the host's.
+	// The host's deadline fires first, so a timeout is reported as one, and
+	// the container's only has to stop what the host could not. It also
+	// bounds how long a run can outlive the app when it quits mid-poll: the
+	// host drops the docker client at once, and the container stops DuckDB at
+	// its own deadline, at most defaultExecTimeout+killGrace after the run began.
+	killGrace = 5 * time.Second
 )
+
+// duckdbCommand returns the command that runs the DuckDB CLI in the
+// container, killed once limit has passed.
+//
+// The host's deadline cannot do this: it kills only the docker client, and
+// docker exec leaves the process it started running in the container. An
+// abandoned run would keep fetching from storage, competing for bandwidth with
+// the runs that follow it, and every poll that timed out would leave another
+// one behind. KILL rather than TERM, so DuckDB cannot finish a request first.
+//
+// It relies on GNU coreutils' timeout and its long options, which the
+// Debian-based pims-duckdb image has. Busybox's would not do.
+func duckdbCommand(limit time.Duration) []string {
+	// Whole seconds, rounded up, and at least one: timeout treats 0 as no limit.
+	secs := max((limit+time.Second-1)/time.Second, 1)
+	return []string{"timeout", "--signal=KILL", fmt.Sprintf("%ds", secs), "duckdb", "-batch"}
+}
 
 // DuckDB queries Tableflow tables with the DuckDB CLI in its container.
 //
 // It remembers the last snapshot it measured for each table, so Query is
 // not safe for concurrent use; the Monitor calls it from one goroutine.
+// Within a poll each table is handled by its own goroutine.
 type DuckDB struct {
 	exec    Execer
 	service string
@@ -203,12 +223,22 @@ type DuckDB struct {
 	tables  []string
 	now     func() time.Time
 	timeout time.Duration
-	// cursor is the sequence number of the last snapshot measured per
-	// table.
-	cursor map[string]int64
-	// failures counts the polls that failed to compare each table's next
+	// state is what the querier remembers about each table. The map is
+	// fixed at construction and a poll hands each table's entry to one
+	// goroutine, so it needs no lock.
+	state map[string]*tableState
+}
+
+// tableState is what the querier remembers about one table between polls.
+type tableState struct {
+	// measured is whether the table has a baseline: its first poll records
+	// the latest snapshot without measuring it.
+	measured bool
+	// cursor is the sequence number of the last snapshot measured.
+	cursor int64
+	// failures counts the polls that failed to compare the table's next
 	// snapshot.
-	failures map[string]int
+	failures int
 }
 
 // NewDuckDB returns a querier for tables in the given catalog.
@@ -216,14 +246,20 @@ func NewDuckDB(exec Execer, service string, catalog Catalog, tables []string) (*
 	if err := catalog.Validate(); err != nil {
 		return nil, err
 	}
+	state := make(map[string]*tableState, len(tables))
 	for _, t := range tables {
 		if !tablePattern.MatchString(t) {
 			return nil, fmt.Errorf("invalid table name %q", t)
 		}
+		if state[t] != nil {
+			// Each table's state belongs to one goroutine during a poll.
+			return nil, fmt.Errorf("duplicate table name %q", t)
+		}
+		state[t] = &tableState{}
 	}
 	return &DuckDB{
 		exec: exec, service: service, catalog: catalog, tables: tables, now: time.Now, timeout: defaultExecTimeout,
-		cursor: map[string]int64{}, failures: map[string]int{},
+		state: state,
 	}, nil
 }
 
@@ -246,17 +282,23 @@ func (d *DuckDB) ref(table string) string {
 	return fmt.Sprintf(`tableflow."%s"."%s"`, d.catalog.Namespace, table)
 }
 
-// snapshotsScript lists the table's snapshots that still need measuring.
-func (d *DuckDB) snapshotsScript(table string) string {
+// snapshotsScript lists, for every table, the snapshots that still need
+// measuring. One run covers all the tables, so the CLI start, sign-in and
+// attach, which cost seconds over a slow link, are paid once per poll. The
+// CLI carries on after a failed statement, so a table that cannot be read
+// does not hide the others' snapshots.
+func (d *DuckDB) snapshotsScript() string {
 	var b strings.Builder
 	d.preamble(&b)
-	after, ok := d.cursor[table]
-	if !ok {
-		// Not measured yet: list only the latest snapshot, which becomes
-		// the baseline.
-		after = math.MaxInt64
+	for _, table := range d.tables {
+		after := d.state[table].cursor
+		if !d.state[table].measured {
+			// Not measured yet: list only the latest snapshot, which becomes
+			// the baseline.
+			after = math.MaxInt64
+		}
+		b.WriteString(snapshotsSQL(table, fmt.Sprintf("iceberg_snapshots(%s)", d.ref(table)), after))
 	}
-	b.WriteString(snapshotsSQL(table, fmt.Sprintf("iceberg_snapshots(%s)", d.ref(table)), after))
 	b.WriteString(statsSQL(d.catalogPrefix()))
 	return b.String()
 }
@@ -321,18 +363,16 @@ type pair struct {
 	prev, curr snapshotRow
 }
 
-// diffScript measures each pair of the table. The CLI carries on after a
-// failed statement, so one unreadable snapshot does not hide the others'
-// results.
-func (d *DuckDB) diffScript(table string, pairs []pair) string {
+// diffScript measures one pair of the table's snapshots. Each pair gets its
+// own run, and so its own deadline: a run that times out loses only its own
+// snapshot, not the ones measured before it.
+func (d *DuckDB) diffScript(table string, p pair) string {
 	var b strings.Builder
 	d.preamble(&b)
 	ref := d.ref(table)
-	for _, p := range pairs {
-		b.WriteString(diffSQL(table, p.curr.SnapshotID,
-			fmt.Sprintf("%s AT (VERSION => %d)", ref, p.curr.SnapshotID),
-			fmt.Sprintf("%s AT (VERSION => %d)", ref, p.prev.SnapshotID)))
-	}
+	b.WriteString(diffSQL(table, p.curr.SnapshotID,
+		fmt.Sprintf("%s AT (VERSION => %d)", ref, p.curr.SnapshotID),
+		fmt.Sprintf("%s AT (VERSION => %d)", ref, p.prev.SnapshotID)))
 	b.WriteString(statsSQL(d.catalogPrefix()))
 	return b.String()
 }
@@ -367,108 +407,145 @@ type diffRow struct {
 // latest snapshot as the baseline: the rows in it may predate Tableflow
 // being enabled, so their wait says nothing about the pipeline.
 //
-// Each table is queried separately, and tables that fail are reported in
-// Result.Errors rather than failing the whole poll, since Tableflow
-// materialises each topic independently. A snapshot that could not be
-// measured is retried on the next poll, up to maxAttempts.
+// One run lists every table's snapshots. Each new snapshot is then compared
+// with its predecessor in a run of its own, and the tables are compared in
+// parallel. A poll therefore takes as long as its slowest table rather than
+// the sum of them, and a run that times out loses only its own snapshot.
+// Tables that fail are reported in Result.Errors rather than failing the
+// whole poll, since Tableflow materialises each topic independently. A
+// snapshot that could not be measured is retried on the next poll, up to
+// maxAttempts.
 func (d *DuckDB) Query(ctx context.Context) (Result, error) {
 	var res Result
-	var listErr error
-	listFailures := 0
-	for _, t := range d.tables {
-		st := QueryStats{Table: t}
-		pts, problem, err := d.queryTable(ctx, t, &st)
-		if ctx.Err() != nil {
-			return Result{}, fmt.Errorf("duckdb query: %w", ctx.Err())
-		}
-		res.Points = append(res.Points, pts...)
-		res.Stats = append(res.Stats, st)
-		switch {
-		case err != nil:
-			listFailures++
-			listErr = err
-			res.Errors = append(res.Errors, TableError{Table: t, Error: err.Error()})
-		case problem != "":
-			res.Errors = append(res.Errors, TableError{Table: t, Error: problem})
-		}
+	rows, execErr, err := run[snapshotRow](ctx, d, d.snapshotsScript(), &res.List)
+	if err != nil {
+		return Result{List: res.List}, err
 	}
-	if listFailures == len(d.tables) {
-		// Nothing succeeded: most likely the catalog could not be reached.
-		// The stats still show how long the attempts took.
-		return Result{Stats: res.Stats}, listErr
+	snapshots := map[string][]snapshotRow{}
+	for _, r := range rows {
+		snapshots[r.Table] = append(snapshots[r.Table], r)
+	}
+	if len(snapshots) == 0 && execErr != nil {
+		// Nothing could be listed: most likely the catalog could not be
+		// reached. The stats still show how long the attempt took.
+		return Result{List: res.List}, fmt.Errorf("duckdb query: %w", execErr)
+	}
+
+	outcomes := make([]tableOutcome, len(d.tables))
+	var wg sync.WaitGroup
+	for i, table := range d.tables {
+		snaps := snapshots[table]
+		if len(snaps) == 0 {
+			outcomes[i].problem = "no snapshots yet"
+			if execErr != nil {
+				// The run's error is not attributed to a table; DuckDB's
+				// message names the one that failed.
+				outcomes[i].problem = fmt.Sprintf("duckdb query: %v", execErr)
+			}
+			continue
+		}
+		pairs := d.plan(table, snaps)
+		if len(pairs) == 0 {
+			continue
+		}
+		wg.Go(func() { d.measure(ctx, table, pairs, &outcomes[i]) })
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return Result{}, fmt.Errorf("duckdb query: %w", ctx.Err())
+	}
+
+	for i, o := range outcomes {
+		res.Points = append(res.Points, o.points...)
+		res.Compares = append(res.Compares, o.compares...)
+		if o.problem != "" {
+			res.Errors = append(res.Errors, TableError{Table: d.tables[i], Error: o.problem})
+		}
 	}
 	return res, nil
 }
 
-// queryTable measures the table's new snapshots. err means its snapshots
-// could not be listed; problem explains a table that is readable but could
-// not be fully measured. It records the DuckDB work in st.
-func (d *DuckDB) queryTable(ctx context.Context, table string, st *QueryStats) (pts []Point, problem string, err error) {
-	snaps, execErr, err := run[snapshotRow](ctx, d, d.snapshotsScript(table), &st.List)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(snaps) == 0 {
-		if execErr != nil {
-			return nil, "", fmt.Errorf("duckdb query: %w", execErr)
-		}
-		return nil, "no snapshots yet", nil
-	}
-	last, ok := d.cursor[table]
-	if !ok {
+// tableOutcome is what one poll found for one table.
+type tableOutcome struct {
+	points   []Point
+	compares []CompareStats
+	// problem explains a table that is readable but could not be fully
+	// measured.
+	problem string
+}
+
+// plan returns the snapshot pairs to measure for the table, given its
+// listing. It also sets the table's baseline, and moves its cursor when the
+// snapshots it was measuring have expired.
+func (d *DuckDB) plan(table string, snaps []snapshotRow) []pair {
+	st := d.state[table]
+	if !st.measured {
 		// Baseline: measuring starts after the latest snapshot.
-		d.cursor[table] = snaps[len(snaps)-1].Sequence
-		return nil, "", nil
+		st.measured, st.cursor = true, snaps[len(snaps)-1].Sequence
+		return nil
 	}
-	if snaps[0].Sequence > last {
+	if snaps[0].Sequence > st.cursor {
 		// The snapshots up to and after the last measured one have expired,
 		// so the first one listed has nothing to compare with.
-		last = snaps[0].Sequence
-		d.cursor[table] = last
+		st.cursor = snaps[0].Sequence
 	}
 	var pairs []pair
 	for i := 1; i < len(snaps) && len(pairs) < maxSnapshotsPerPoll; i++ {
-		if snaps[i].Sequence > last {
+		if snaps[i].Sequence > st.cursor {
 			pairs = append(pairs, pair{prev: snaps[i-1], curr: snaps[i]})
 		}
 	}
-	if len(pairs) == 0 {
-		return nil, "", nil
-	}
+	return pairs
+}
 
-	st.Snapshots, st.Compare = len(pairs), &RunStats{}
-	diffs, diffErr, err := run[diffRow](ctx, d, d.diffScript(table, pairs), st.Compare)
-	if err != nil {
-		// A timeout or unparseable output: count it against every pair.
-		diffs, diffErr = nil, err
-	}
-	observed := d.now().UTC()
-	got := map[int64]diffRow{}
-	for _, r := range diffs {
-		got[r.SnapshotID] = r
-	}
+// measure compares each pair's snapshot with its predecessor, one run per
+// pair and in order. It moves the table's cursor past a snapshot as soon as
+// it has been measured, so a later failure keeps the progress made.
+func (d *DuckDB) measure(ctx context.Context, table string, pairs []pair, out *tableOutcome) {
+	st := d.state[table]
 	for _, p := range pairs {
-		r, ok := got[p.curr.SnapshotID]
-		if !ok {
-			reason := "snapshot comparison returned no result"
-			if diffErr != nil {
-				reason = diffErr.Error()
+		cs := CompareStats{Table: table, SnapshotID: p.curr.SnapshotID}
+		diffs, diffErr, err := run[diffRow](ctx, d, d.diffScript(table, p), &cs.Run)
+		if ctx.Err() != nil {
+			// Shutting down, which is no fault of the snapshot's.
+			return
+		}
+		if err != nil {
+			// A timeout or unparseable output.
+			diffs, diffErr = nil, err
+		}
+		var r diffRow
+		found := false
+		for _, row := range diffs {
+			if row.SnapshotID == p.curr.SnapshotID {
+				r, found = row, true
+				break
 			}
-			if d.failures[table]++; d.failures[table] < maxAttempts {
+		}
+		if !found {
+			cs.Err = errors.New("snapshot comparison returned no result")
+			if diffErr != nil {
+				cs.Err = diffErr
+			}
+		}
+		out.compares = append(out.compares, cs)
+		if !found {
+			if st.failures++; st.failures < maxAttempts {
 				// Keep the cursor here so this snapshot is retried, and stop
 				// so the table's snapshots are measured in order.
-				return pts, fmt.Sprintf("comparing snapshot %d: %s", p.curr.SnapshotID, reason), nil
+				out.problem = fmt.Sprintf("comparing snapshot %d: %v", p.curr.SnapshotID, cs.Err)
+				return
 			}
-			problem = fmt.Sprintf("skipped snapshot %d after %d failed comparisons: %s", p.curr.SnapshotID, maxAttempts, reason)
+			out.problem = fmt.Sprintf("skipped snapshot %d after %d failed comparisons: %v", p.curr.SnapshotID, maxAttempts, cs.Err)
 		}
-		d.cursor[table] = p.curr.Sequence
-		d.failures[table] = 0
-		if !ok || r.Records == 0 || r.OldestMs == nil || r.NewestMs == nil {
+		st.cursor = p.curr.Sequence
+		st.failures = 0
+		if !found || r.Records == 0 || r.OldestMs == nil || r.NewestMs == nil {
 			continue
 		}
 		com := time.UnixMilli(p.curr.CommittedMs).UTC()
 		oldest, newest := time.UnixMilli(*r.OldestMs).UTC(), time.UnixMilli(*r.NewestMs).UTC()
-		pts = append(pts, Point{
+		out.points = append(out.points, Point{
 			Table:        table,
 			SnapshotID:   p.curr.SnapshotID,
 			Records:      r.Records,
@@ -477,10 +554,9 @@ func (d *DuckDB) queryTable(ctx context.Context, table string, st *QueryStats) (
 			CommittedAt:  com,
 			LatencyMs:    com.Sub(oldest).Milliseconds(),
 			MinLatencyMs: com.Sub(newest).Milliseconds(),
-			ObservedAt:   observed,
+			ObservedAt:   d.now().UTC(),
 		})
 	}
-	return pts, problem, nil
 }
 
 // run executes script with its own deadline and decodes its rows, filling
@@ -492,7 +568,7 @@ func run[T any](ctx context.Context, d *DuckDB, script string, stats *RunStats) 
 	defer cancel()
 	redact := []string{d.catalog.APISecret, d.catalog.APIKey}
 	start := time.Now()
-	out, execErr := d.exec.Exec(ctx, d.service, strings.NewReader(script), redact, "duckdb", "-batch")
+	out, execErr := d.exec.Exec(ctx, d.service, strings.NewReader(script), redact, duckdbCommand(d.timeout+killGrace)...)
 	stats.Wall = time.Since(start)
 	if ctx.Err() != nil {
 		return nil, nil, fmt.Errorf("duckdb query: %w", ctx.Err())
@@ -577,15 +653,11 @@ func (m *Monitor) Run(ctx context.Context, onResult func(Result)) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			for _, s := range res.Stats {
-				m.logStats(ctx, s)
-			}
+			m.logRuns(ctx, res)
 			m.log.Warn("Latency query failed", "error", err)
 			onResult(Result{Errors: []TableError{{Table: "*", Error: err.Error()}}})
 		default:
-			for _, s := range res.Stats {
-				m.logStats(ctx, s)
-			}
+			m.logRuns(ctx, res)
 			for _, p := range res.Points {
 				m.log.Info("Measured replication latency", "table", p.Table, "records", p.Records,
 					"latency_ms", p.LatencyMs, "min_latency_ms", p.MinLatencyMs, "committed_at", p.CommittedAt)
@@ -600,16 +672,18 @@ func (m *Monitor) Run(ctx context.Context, onResult func(Result)) {
 	}
 }
 
-// logStats logs how long a table's DuckDB work took. Polls that only
-// listed snapshots are logged at debug level, since they run every
-// interval; polls that compared snapshots, and so produced measurements,
-// at info.
-func (m *Monitor) logStats(ctx context.Context, s QueryStats) {
-	level := slog.LevelDebug
-	attrs := []any{"table", s.Table, "snapshots", s.Snapshots, "duration_ms", s.Duration().Milliseconds(), "list", s.List}
-	if s.Compare != nil {
-		level = slog.LevelInfo
-		attrs = append(attrs, "compare", *s.Compare)
+// logRuns logs the DuckDB work behind a poll. The snapshot listing runs
+// every interval, so it is logged at debug level. Each comparison is logged
+// at info, or at warn when it produced no measurement, since its figures are
+// what show whether the runs are slow.
+func (m *Monitor) logRuns(ctx context.Context, res Result) {
+	m.log.Log(ctx, slog.LevelDebug, "Listed table snapshots", "list", res.List)
+	for _, c := range res.Compares {
+		attrs := []any{"table", c.Table, "snapshot_id", c.SnapshotID, "compare", c.Run}
+		if c.Err != nil {
+			m.log.Log(ctx, slog.LevelWarn, "Snapshot comparison failed", append(attrs, "error", c.Err)...)
+			continue
+		}
+		m.log.Log(ctx, slog.LevelInfo, "Ran latency query", attrs...)
 	}
-	m.log.Log(ctx, level, "Ran latency query", attrs...)
 }
