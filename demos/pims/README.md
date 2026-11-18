@@ -69,6 +69,9 @@ Everything there is user-only (0700/0600).
 
 ## How latency is measured
 
+The **Data flow** panel under the header shows this path as a diagram, with the
+same explanation, and its arrows animate while the simulator runs.
+
 Every 30 seconds PIMS runs the DuckDB CLI in its container. DuckDB attaches the
 Tableflow Iceberg REST catalog with the Tableflow API key and, for each table,
 lists the Iceberg snapshots committed since the last poll. It compares each new

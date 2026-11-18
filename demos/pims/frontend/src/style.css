@@ -163,6 +163,47 @@ svg .empty { fill: var(--text-muted); font-size: 13px; }
 .tooltip-row { display: grid; grid-template-columns: 14px 1fr auto; align-items: center; gap: 6px; }
 .num { font-variant-numeric: tabular-nums; text-align: right; }
 
+.grid .dataflow { grid-column: 1 / -1; }
+.flow-scroll { overflow-x: auto; }
+.flow { display: block; width: 100%; min-width: 760px; height: auto; }
+.flow text { fill: var(--text-primary); font-size: 12px; }
+.flow-group rect { fill: var(--surface-0); stroke: var(--border); }
+.flow-group text { fill: var(--text-muted); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.flow-node rect { fill: var(--surface-1); stroke: var(--border); }
+.flow-node .node-title { font-size: 13px; font-weight: 650; }
+.flow-node .node-sub { fill: var(--text-secondary); font-size: 11px; }
+.edge { fill: none; stroke-width: 2; }
+.edge-data { stroke: var(--accent); }
+.edge-query { stroke: var(--text-muted); }
+.flow-arrow-data path { fill: var(--accent); }
+.flow-arrow-query path { fill: var(--text-muted); }
+.flow .edge-label { fill: var(--text-secondary); font-size: 11px; }
+.bracket { fill: none; stroke: var(--text-primary); stroke-width: 1.5; stroke-linejoin: round; }
+.bracket-dot { fill: var(--text-primary); }
+.flow .bracket-end { fill: var(--text-secondary); font-size: 11px; }
+.bracket-end tspan { font-weight: 650; fill: var(--text-primary); }
+.flow .bracket-label { font-size: 13px; font-weight: 650; }
+/* While the simulator runs, events visibly travel the write path. */
+.flow-active .edge-data { stroke-dasharray: 6 6; animation: flow-dash .7s linear infinite; }
+@keyframes flow-dash { to { stroke-dashoffset: -12; } }
+@media (prefers-reduced-motion: reduce) { .flow-active .edge-data { stroke-dasharray: none; animation: none; } }
+
+.latency-how { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+h3 { margin: 0 0 10px; font-size: 13px; font-weight: 650; letter-spacing: -0.005em; }
+.how-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; counter-reset: how; }
+.how-steps li {
+  counter-increment: how; display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.45; color: var(--text-secondary);
+}
+.how-steps strong { color: var(--text-primary); font-weight: 650; }
+.how-steps strong::before { content: counter(how) ". "; color: var(--accent); }
+.formula {
+  margin: 12px 0 0; padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.how-notes { margin: 8px 0 0; padding-left: 18px; }
+.how-notes li + li { margin-top: 2px; }
+
 .table-wrap { max-height: 320px; overflow: auto; }
 .data { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data th, .data td { padding: 5px 8px; border-bottom: 1px solid var(--grid); text-align: left; }

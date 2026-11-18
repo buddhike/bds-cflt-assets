@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useState} from 'react';
 import {api, AppState, errorText, LatencyPoint, LogEntry, Step, TableError} from './api';
 import {CredentialsForm} from './components/CredentialsForm';
+import {DataFlow} from './components/DataFlow';
 import {SetupSteps} from './components/SetupSteps';
 import {SimulationPanel} from './components/SimulationPanel';
 import {LatencyChart} from './components/LatencyChart';
@@ -102,6 +103,7 @@ export default function App() {
       {(actionError || state.lastError) && <p className="banner error" role="alert">{actionError || state.lastError}</p>}
 
       <div className="grid">
+        <DataFlow active={state.sim.running}/>
         <section className="card">
           <header className="card-head"><h2>Setup</h2></header>
           <SetupSteps steps={state.steps}/>
