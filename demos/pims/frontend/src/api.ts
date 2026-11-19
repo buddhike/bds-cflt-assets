@@ -36,31 +36,26 @@ export interface LogEntry {
   attrs: string;
 }
 
-/** The latency of one Iceberg snapshot and the rows it published. */
-export interface LatencyPoint {
+/** Tableflow's reading of a freshness metric for one table, for the minute starting at `time`. */
+export interface LatencySample {
   table: string;
-  snapshotId: string;
-  records: number;
-  /** Oldest updated_at among the snapshot's new rows. */
-  recordAt: string;
-  /** Newest updated_at among the snapshot's new rows. */
-  newestAt: string;
-  committedAt: string;
-  /** Longest wait: committedAt - recordAt. */
-  latencyMs: number;
-  /** Shortest wait: committedAt - newestAt. */
-  minLatencyMs: number;
-  observedAt: string;
+  time: string;
+  ms: number;
 }
 
-export interface TableError {
-  table: string;
-  error: string;
-}
-
+/**
+ * Tableflow's two freshness metrics over the last 5 hours, oldest sample first.
+ * A table Tableflow has not reported on yet has no samples.
+ */
 export interface LatencyResult {
-  points: LatencyPoint[] | null;
-  errors?: TableError[] | null;
+  /** io.confluent.tableflow/event_freshness_latency_milliseconds */
+  event: LatencySample[] | null;
+  /** io.confluent.tableflow/processing_freshness_latency_milliseconds */
+  processing: LatencySample[] | null;
+  /** When PIMS last read the metrics; absent before the first poll. */
+  observedAt?: string;
+  /** Why the latest poll failed. The samples are those of the last good poll. */
+  error?: string;
 }
 
 export interface AppState {
@@ -71,8 +66,7 @@ export interface AppState {
   steps: Step[];
   sim: SimStats;
   logs: LogEntry[] | null;
-  latency: LatencyPoint[] | null;
-  tableErrors: TableError[] | null;
+  latency: LatencyResult;
   limits: {minRate: number; maxRate: number; defaultRate: number};
 }
 

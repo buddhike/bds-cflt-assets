@@ -24,7 +24,7 @@ const (
 	servicesTimeout  = 20 * time.Minute
 	connectorTimeout = 5 * time.Minute
 	schemasTimeout   = 10 * time.Minute
-	pollInterval     = 30 * time.Second
+	pollInterval     = latency.DefaultInterval
 )
 
 // mysqlInternalHost/Port are how Kafka Connect reaches MySQL on the
@@ -35,7 +35,7 @@ const (
 )
 
 // NewDeps wires the real Terraform, Docker, MySQL, Kafka Connect, Schema
-// Registry and DuckDB implementations.
+// Registry and Metrics API implementations.
 func NewDeps(ws config.Workspace, log *slog.Logger) Deps {
 	tf := terraform.NewRunner(ws, log)
 	project := compose.NewProject(ws, log)
@@ -109,13 +109,8 @@ func NewDeps(ws config.Workspace, log *slog.Logger) Deps {
 			}
 			return r.WaitForValueSchemas(ctx, out.Topics)
 		},
-		NewQuerier: func(out terraform.Outputs) (latency.Querier, error) {
-			return latency.NewDuckDB(project, compose.ServiceDuckDB, latency.Catalog{
-				Endpoint:  out.TableflowCatalogEndpoint,
-				APIKey:    out.TableflowAPIKey,
-				APISecret: out.TableflowAPISecret,
-				Namespace: out.KafkaClusterID,
-			}, schema.Tables)
+		NewQuerier: func(c config.Credentials, out terraform.Outputs) (latency.Querier, error) {
+			return latency.NewMetricsAPI(latency.DefaultEndpoint, out.KafkaClusterID, c.APIKey, c.APISecret, schema.Tables)
 		},
 		PollInterval: pollInterval,
 	}

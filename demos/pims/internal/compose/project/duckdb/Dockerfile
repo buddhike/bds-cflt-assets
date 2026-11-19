@@ -17,5 +17,5 @@ RUN apt-get update \
  && useradd --create-home duckdb
 
 USER duckdb
-# Pre-install extensions so each latency query does not download them.
+# Pre-install extensions so each query does not download them.
 RUN duckdb -c "INSTALL httpfs; INSTALL iceberg; INSTALL avro;"

@@ -45,7 +45,7 @@ export function CredentialsForm({onSaved}: {onSaved: () => void}) {
         </div>
         <p className="lede">
           Patient Information Management System: a demo of Debezium CDC from MySQL into Confluent Cloud Tableflow
-          Iceberg tables, with end-to-end latency measured in DuckDB.
+          Iceberg tables, with Tableflow's freshness metrics charted live.
         </p>
 
         <p className="notice" role="note">

@@ -4,7 +4,7 @@
 --   * Every table has a primary key: Debezium uses it as the Kafka record
 --     key and Tableflow's upsert mode requires one.
 --   * created_at / updated_at are DATETIME(3) set by MySQL (server time zone
---     is UTC). updated_at is the reference point for end-to-end latency.
+--     is UTC).
 --   * Business times (scheduled_at, check_in_at, ...) come from the
 --     simulator's clock, not the wall clock.
 

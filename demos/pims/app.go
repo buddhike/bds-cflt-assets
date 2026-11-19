@@ -29,10 +29,7 @@ const (
 )
 
 // History kept for a frontend that (re)loads after events were emitted.
-const (
-	maxLogs    = 500
-	maxLatency = 5000
-)
+const maxLogs = 500
 
 // ErrNoCredentials is returned when an action needs Confluent Cloud
 // credentials that have not been entered yet.
@@ -57,19 +54,21 @@ type App struct {
 	log    *slog.Logger
 	pipe   *pipeline.Pipeline
 
-	mu          sync.Mutex
-	creds       *config.Credentials // in memory only, never persisted
-	logs        ring[logging.Entry]
-	points      ring[latency.Point]
-	tableErrors []latency.TableError
-	busy        string // "setup" or "teardown" while one is running
-	lastError   string
+	mu    sync.Mutex
+	creds *config.Credentials // in memory only, never persisted
+	logs  ring[logging.Entry]
+	// latency is the last good reading of Tableflow's freshness metrics, with
+	// the error of the latest poll if it failed. Its ObservedAt is that of the
+	// last good poll.
+	latency   latency.Result
+	busy      string // "setup" or "teardown" while one is running
+	lastError string
 }
 
 // NewApp returns an App. The logger is attached later by attachLogger so
 // that log records can be forwarded to the frontend.
 func NewApp(ws config.Workspace) *App {
-	return &App{ws: ws, logs: newRing[logging.Entry](maxLogs), points: newRing[latency.Point](maxLatency)}
+	return &App{ws: ws, logs: newRing[logging.Entry](maxLogs)}
 }
 
 // attachLogger sets the logger and builds the pipeline that uses it.
@@ -102,14 +101,20 @@ func (a *App) onLog(e logging.Entry) {
 
 func (a *App) onStep(s pipeline.StepState) { a.emit(eventStep, s) }
 
+// onLatency keeps the newest reading and sends it to the frontend. Each
+// result covers a whole window, so it replaces the last one. A failed poll
+// has no samples: it keeps the last good ones and only records the error, so
+// a passing outage does not blank the charts.
 func (a *App) onLatency(r latency.Result) {
 	a.mu.Lock()
-	for _, p := range r.Points {
-		a.points.push(p)
+	if r.Error == "" {
+		a.latency = r
+	} else {
+		a.latency.Error = r.Error
 	}
-	a.tableErrors = r.Errors
+	cur := a.latency
 	a.mu.Unlock()
-	a.emit(eventLatency, r)
+	a.emit(eventLatency, cur)
 }
 
 // emitter sends events to the frontend; replaced in tests.
@@ -227,8 +232,7 @@ type State struct {
 	Steps          []pipeline.StepState `json:"steps"`
 	Sim            sim.Stats            `json:"sim"`
 	Logs           []logging.Entry      `json:"logs"`
-	Latency        []latency.Point      `json:"latency"`
-	TableErrors    []latency.TableError `json:"tableErrors"`
+	Latency        latency.Result       `json:"latency"`
 	Limits         map[string]float64   `json:"limits"`
 }
 
@@ -240,8 +244,7 @@ func (a *App) GetState() State {
 		Busy:           a.busy,
 		LastError:      a.lastError,
 		Logs:           a.logs.items(),
-		Latency:        a.points.items(),
-		TableErrors:    a.tableErrors,
+		Latency:        a.latency,
 	}
 	if a.creds != nil {
 		st.AWSRegion = a.creds.AWSRegion
@@ -261,11 +264,10 @@ func (a *App) Setup() error {
 
 // Teardown deletes every local and Confluent Cloud resource in the
 // background, reporting completion through "teardown:done". The latency
-// history is cleared only once teardown has succeeded.
+// reading is cleared only once teardown has succeeded.
 func (a *App) Teardown() error {
 	return a.background("teardown", eventTeardownDone, a.pipe.Teardown, func() {
-		a.points = newRing[latency.Point](maxLatency)
-		a.tableErrors = nil
+		a.latency = latency.Result{}
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"pims/internal/config"
+	"pims/internal/latency"
 	"pims/internal/pipeline"
 )
 
@@ -178,4 +179,79 @@ func TestShutdownCancelsRunningSetup(t *testing.T) {
 		t.Fatalf("after shutdown: busy %q, lastError %q", st.Busy, st.LastError)
 	}
 	_ = ev
+}
+
+// latencyResult is a reading with one sample of each metric.
+func latencyResult(ms float64) latency.Result {
+	at := time.Unix(1_700_000_000, 0).UTC()
+	return latency.Result{
+		Event:      []latency.Sample{{Table: "patients", Time: at, Ms: ms}},
+		Processing: []latency.Sample{{Table: "patients", Time: at, Ms: ms / 2}},
+		ObservedAt: at,
+	}
+}
+
+func TestLatencyKeepsLastGoodReadingThroughAFailedPoll(t *testing.T) {
+	ev := captureEvents(t)
+	a := newTestApp(t)
+	a.ctx = context.Background() // as if Wails had called startup
+
+	last := func() latency.Result {
+		ev.mu.Lock()
+		defer ev.mu.Unlock()
+		return ev.events[eventLatency][len(ev.events[eventLatency])-1].(latency.Result)
+	}
+
+	// A result covers a whole window, so a newer one replaces the older.
+	a.onLatency(latencyResult(1000))
+	a.onLatency(latencyResult(2000))
+	if got := a.GetState().Latency; len(got.Event) != 1 || got.Event[0].Ms != 2000 {
+		t.Fatalf("state after two results = %+v, want only the newer", got)
+	}
+
+	// A failed poll keeps the last good reading, and when it was read, and
+	// adds its error, in both the state a reloaded UI gets and the event the
+	// open UI gets.
+	a.onLatency(latency.Result{Error: "metrics api returned 401 Unauthorized", ObservedAt: time.Unix(1_800_000_000, 0).UTC()})
+	got := a.GetState().Latency
+	if len(got.Event) != 1 || got.Event[0].Ms != 2000 || len(got.Processing) != 1 || got.Error == "" {
+		t.Fatalf("state after a failed poll = %+v", got)
+	}
+	if !got.ObservedAt.Equal(latencyResult(0).ObservedAt) {
+		t.Fatalf("observedAt = %v, want the last good poll's", got.ObservedAt)
+	}
+	if e := last(); len(e.Event) != 1 || e.Error != got.Error {
+		t.Fatalf("event after a failed poll = %+v", e)
+	}
+
+	// The next good result clears the error.
+	a.onLatency(latencyResult(3000))
+	if got := a.GetState().Latency; got.Error != "" || got.Event[0].Ms != 3000 {
+		t.Fatalf("state after recovering = %+v", got)
+	}
+}
+
+func TestTeardownClearsLatency(t *testing.T) {
+	ev := captureEvents(t)
+	a := NewApp(config.Workspace{Root: t.TempDir()})
+	a.attachPipeline(slog.New(slog.DiscardHandler), fakeDeps(make(chan struct{})))
+	a.startup(context.Background())
+	t.Cleanup(func() { a.shutdown(context.Background()) })
+	if err := a.SetCredentials(config.Credentials{AWSRegion: "us-east-1", APIKey: "key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.onLatency(latencyResult(1000))
+	if got := a.GetState().Latency; len(got.Event) == 0 {
+		t.Fatal("setup: no reading to clear")
+	}
+	if err := a.Teardown(); err != nil {
+		t.Fatal(err)
+	}
+	if done := ev.wait(t, eventTeardownDone).(map[string]string); done["error"] != "" {
+		t.Fatalf("teardown failed: %v", done)
+	}
+	if got := a.GetState().Latency; len(got.Event) != 0 || len(got.Processing) != 0 || got.Error != "" || !got.ObservedAt.IsZero() {
+		t.Fatalf("state after teardown = %+v, want it cleared", got)
+	}
 }

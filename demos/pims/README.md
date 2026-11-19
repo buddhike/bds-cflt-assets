@@ -2,33 +2,39 @@
 
 Patient Information Management System: a desktop demo of Confluent Cloud
 **Tableflow** materialising MySQL tables as Apache Iceberg tables via a
-**Debezium** CDC connector, with end-to-end latency charted live.
+**Debezium** CDC connector, with Tableflow's freshness metrics charted live.
 
 ```
 MySQL ──binlog──▶ Debezium (Kafka Connect) ──Avro──▶ Confluent Cloud topics
                                                      (compacted, Schema Registry)
                                                             │ Tableflow
                                                             ▼
-                    DuckDB ◀──Iceberg REST catalog── Iceberg tables (managed storage)
+                                                     Iceberg tables (managed storage)
+
+PIMS ◀──freshness metrics── Confluent Cloud Metrics API ◀── Tableflow
 ```
 
 PIMS is a [Wails](https://wails.io) (Go + React) app that:
 
 1. **Sets up everything**: Confluent Cloud environment, Standard Kafka cluster,
    compacted topics, API keys and Tableflow (Terraform run in-process). It
-   also starts MySQL, Kafka Connect with Debezium, and DuckDB (Docker Compose),
-   then installs the schema and registers the connector.
+   also starts MySQL, Kafka Connect with Debezium, and a DuckDB container for
+   querying the Iceberg tables (Docker Compose), then installs the schema and
+   registers the connector. The charts do not use DuckDB.
 2. **Simulates a clinic**: patient registrations, bookings, check-ins,
    walk-ins, no-shows, cancellations and visit completions, at a rate you set.
-3. **Charts latency**: the time from a row's MySQL `updated_at` to the
-   commit of the Iceberg snapshot that published it, per table.
+3. **Charts freshness**: how fresh each Iceberg table is, using Tableflow's own
+   `event_freshness_latency_milliseconds` and
+   `processing_freshness_latency_milliseconds` metrics, per table.
 
 ## Prerequisites
 
 - **Docker** (Docker Desktop on macOS). Nothing else needs to be installed.
   PIMS downloads a pinned, signature-verified Terraform binary on first use.
 - A **Confluent Cloud** account and a *Cloud resource management* API key that
-  can create environments.
+  can create environments. PIMS also uses this key to read Tableflow's metrics
+  from the Metrics API, so its owner must be allowed to do that too (for
+  example with the `MetricsViewer` role).
 - **Tableflow native Debezium support is in Early Access.** Your organisation
   or environment must be enrolled, or the Tableflow tables will not
   materialise.
@@ -50,8 +56,9 @@ wails build        # produces build/bin/pims.app (macOS)
    minutes, mostly cluster provisioning and image builds. Setup starts the
    simulator, because Debezium only registers a topic's schema with its first
    record and Tableflow needs that schema.
-3. Adjust **events per second**, then watch the latency chart. Tableflow
-   commits snapshots periodically, so expect points every few minutes.
+3. Adjust **events per second**, then watch the freshness charts. Tableflow
+   commits periodically and the Metrics API is a few minutes behind, so expect
+   the first values several minutes after Tableflow is enabled.
 4. Click **Tear down** to delete the connector, local containers, the MySQL
    volume and every Confluent Cloud resource PIMS created.
 
@@ -67,52 +74,52 @@ Working files live in the OS config dir, e.g.
 
 Everything there is user-only (0700/0600).
 
-## How latency is measured
+## How freshness is shown
 
 The **Data flow** panel under the header shows this path as a diagram, with the
 same explanation, and its arrows animate while the simulator runs.
 
-Every 30 seconds PIMS runs the DuckDB CLI in its container. DuckDB attaches the
-Tableflow Iceberg REST catalog with the Tableflow API key and, in one run for
-all the tables, lists the Iceberg snapshots committed since the last poll. It
-then compares each new snapshot with the one before it, matching rows on
-`(id, updated_at)`. The rows
-that are only in the new snapshot are the inserts and updates it published
-(MySQL bumps `updated_at` on every change), and each of them waited from its
-`updated_at` until the snapshot's commit time. The chart plots the longest of
-those waits, one point per snapshot; the table view also shows the shortest.
-Snapshots that publish no new rows, such as compaction, are skipped, and a
-table's first snapshot is only a baseline, since its rows may predate
-Tableflow being enabled.
+PIMS does not measure latency itself. Tableflow reports two gauges per table
+to the Confluent Cloud Metrics API, and PIMS charts them:
 
-That wait covers the whole path: MySQL write, Debezium capture, Kafka,
-Tableflow materialisation and S3 commit. `updated_at` is set by MySQL inside
-Docker, so the result depends on the Docker VM clock staying in sync with
-the host.
+| Metric | What it is |
+|---|---|
+| `io.confluent.tableflow/event_freshness_latency_milliseconds` | The age of the newest record Tableflow has written to the table: from the record's timestamp to when Tableflow wrote it. It includes everything before Tableflow (the MySQL write, Debezium capture and Kafka). |
+| `io.confluent.tableflow/processing_freshness_latency_milliseconds` | Tableflow's own processing time: from picking a record up to writing it to the table. |
 
-Each comparison is a DuckDB run of its own, and the tables are compared in
-parallel. A poll therefore takes as long as its slowest table, and a run that
-times out after 90 seconds loses only its own snapshot. A table's snapshots
-are measured in order, at most five per poll, so a backlog drains over several
-polls. A comparison that fails is retried on the next poll and skipped after
-three failed attempts.
+Every 60 seconds PIMS sends two queries to
+`POST https://api.telemetry.confluent.cloud/v2/metrics/cloud/query`, one per
+metric, filtered to the demo's Kafka cluster (`resource.kafka.id`) and grouped
+by `metric.topic`. Each asks for the last 5 hours at one-minute granularity
+(`PT1M`), which is the longest window the API allows at that granularity, so a
+poll returns up to 360 values per table per metric. The result replaces the
+previous one, so the charts always show the last 5 hours, and a poll that
+fails keeps the last good reading on screen and shows the error above it. A
+failed poll is not retried within the minute: the next one reads the whole
+window again, so nothing is lost. PIMS keeps nothing older, so anything beyond
+5 hours would need a coarser granularity or PIMS storing its own history.
 
-DuckDB runs under the container's own `timeout`, which kills it five seconds
-after PIMS gives up on the run. Without it a timed-out run would carry on in
-the container, still reading from storage and slowing the runs that follow.
+Each poll logs a `Queried Tableflow freshness metrics` line in the Activity log
+with how many samples came back for each metric, the time of the newest, and
+any topics in the answer that PIMS does not chart (`other_topics`). If a chart
+stays empty, that line tells apart "the API returned nothing for this window"
+from "it returned rows PIMS could not match to a table".
 
-Each comparison logs a `Ran latency query` line with the table, the snapshot
-id, the wall time of its DuckDB run and DuckDB's own figures: query time,
-operator time (DuckDB's `CPU_TIME`, which includes scans waiting on reads),
-rows scanned, peak memory, and the HTTP requests, time and bytes for the
-catalog and for storage, read from DuckDB's request log. A comparison that
-fails logs `Snapshot comparison failed` with the error instead, and a timeout
-has no DuckDB figures, since DuckDB prints them last. The snapshot listing
-logs its figures at debug level as `Listed table snapshots`.
+Things to know when reading the charts:
 
-Each comparison reads both versions of the table in full, so a poll's cost
-grows with the table. That is fine for a demo run; a long run would need to
-limit the comparison to recent `updated_at` values.
+- Both metrics are in **Preview** and can change before general availability.
+- Tableflow updates the gauges when it commits to a table, so each table's
+  value moves in steps and repeats between commits. Each point is the highest
+  value Tableflow reported for that table in that minute.
+- The Metrics API makes data available about three minutes after it is
+  produced, and the first values can take several minutes to appear after
+  Tableflow is enabled. Until then the charts say they are waiting.
+- The query uses the Cloud API key you entered, over HTTPS. The Metrics API
+  rejects keys scoped to a Kafka cluster, and a `401` or `403` is shown in the
+  panel with a hint. PIMS creates no extra key for this, so the demo's service
+  account keeps its environment-only scope.
+- The DuckDB container still starts with the rest of the stack, but nothing
+  reads Tableflow through it for these charts.
 
 ## Project layout
 
@@ -120,13 +127,13 @@ limit the comparison to recent `updated_at` values.
 |---|---|
 | `main.go`, `app.go` | Wails entrypoint and the methods/events bound to the UI |
 | `frontend/` | React + TypeScript UI (Vite) |
-| `internal/pipeline` | Orchestrates setup steps, teardown, simulator and latency monitor |
+| `internal/pipeline` | Orchestrates setup steps, teardown, simulator and metrics monitor |
 | `internal/terraform` | Embedded Terraform config, run with terraform-exec and hc-install |
 | `internal/compose` | Embedded Docker Compose project (MySQL, Connect + Debezium, DuckDB) |
 | `internal/schema` | MySQL schema and Debezium user |
 | `internal/connector` | Kafka Connect and Schema Registry REST clients |
 | `internal/sim` | Clinic simulator: domain model, rate-limited runner, MySQL store |
-| `internal/latency` | DuckDB queries against the Tableflow Iceberg catalog |
+| `internal/latency` | Metrics API client and monitor for Tableflow's freshness metrics |
 | `internal/config`, `logging`, `retry` | Credentials and workspace, slog tee to the UI, backoff |
 
 ## Releasing

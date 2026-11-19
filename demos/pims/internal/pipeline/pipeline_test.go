@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -60,7 +61,7 @@ func (f closerFunc) Close() error { return f() }
 type fakeQuerier struct{}
 
 func (fakeQuerier) Query(context.Context) (latency.Result, error) {
-	return latency.Result{Points: []latency.Point{{Table: "patients", CommittedAt: time.Now()}}}, nil
+	return latency.Result{Event: []latency.Sample{{Table: "patients", Time: time.Now(), Ms: 1000}}}, nil
 }
 
 func fakeDeps(r *recorder) Deps {
@@ -91,10 +92,16 @@ func fakeDeps(r *recorder) Deps {
 			r.add("schema")
 			return nopStore{}, closerFunc(func() error { r.add("db-close"); return nil }), nil
 		},
-		StartCDC:     func(context.Context, terraform.Outputs, compose.MySQLSecrets) error { r.add("cdc"); return nil },
-		StopCDC:      func(context.Context, compose.MySQLSecrets) error { r.add("cdc-delete"); return nil },
-		WaitSchemas:  func(context.Context, terraform.Outputs) error { r.add("schemas"); return nil },
-		NewQuerier:   func(terraform.Outputs) (latency.Querier, error) { r.add("monitor"); return fakeQuerier{}, nil },
+		StartCDC:    func(context.Context, terraform.Outputs, compose.MySQLSecrets) error { r.add("cdc"); return nil },
+		StopCDC:     func(context.Context, compose.MySQLSecrets) error { r.add("cdc-delete"); return nil },
+		WaitSchemas: func(context.Context, terraform.Outputs) error { r.add("schemas"); return nil },
+		NewQuerier: func(c config.Credentials, o terraform.Outputs) (latency.Querier, error) {
+			if c != creds || o.KafkaClusterID != "lkc-1" {
+				return nil, fmt.Errorf("monitor got credentials %v and cluster %q", c, o.KafkaClusterID)
+			}
+			r.add("monitor")
+			return fakeQuerier{}, nil
+		},
 		PollInterval: time.Hour,
 		Seed:         1,
 	}

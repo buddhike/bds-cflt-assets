@@ -1,6 +1,6 @@
 // Command pims is the PIMS desktop app: it provisions a Confluent Cloud
 // Tableflow + Debezium demo, simulates a clinic's patient data and charts
-// end-to-end replication latency.
+// Tableflow's freshness metrics.
 package main
 
 import (

@@ -14,7 +14,7 @@ services:
       - --binlog-row-image=FULL
       - --gtid-mode=ON
       - --enforce-gtid-consistency=ON
-      # Store and emit DATETIME values in UTC so latency maths is unambiguous.
+      # Store and emit DATETIME values in UTC so timestamps are unambiguous.
       - --default-time-zone=+00:00
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}

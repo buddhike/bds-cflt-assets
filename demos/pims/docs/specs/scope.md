@@ -26,6 +26,7 @@ flowchart LR
         Topics[Kafka topics<br/>patients, visits, appointments<br/>cleanup.policy=compact]
         TF[Tableflow]
         Iceberg[(Iceberg tables<br/>managed storage)]
+        Metrics[Metrics API]
     end
     App[PIMS Wails app]
 
@@ -36,14 +37,15 @@ flowchart LR
     DBZ -- CDC records --> Topics
     Topics --> TF --> Iceberg
     DuckDB -- queries --> Iceberg
-    DuckDB -- latency results --> App
+    TF -- freshness metrics --> Metrics
+    App -- polls freshness metrics --> Metrics
 ```
 
 ## Application
 PIMS is a Wails Go app to:
 - Fully automate the setup of each component
 - Simulate patient registrations, visits and appointments in a realistic manner
-- Visualise the end-to-end latency of the replication process.
+- Visualise how fresh the replicated tables are, using Tableflow's freshness metrics.
 
 ## Prerequisites
 
@@ -70,8 +72,13 @@ PIMS automates the setup and configuration of all infrastructure components requ
 Once the components are setup, simulate patient registrations, visits and appointments.
 - Operator can control how many of those events/sec are simulated.
 - Ensure the events resemble the real-world scenario. For example, a patient cannot have more than one appointment on the same day. 
-- Database tables must include timestamps for create/update operations so that the end-to-end latency can be measured. 
+- Database tables must include timestamps for create/update operations.
 
-### End to end visualisation
-- Run a DuckDB query to retrive the latest records and visualise its source S3 file's timestamp. Visualise the gap in a line graph.
+### Freshness visualisation
+- Read Tableflow's freshness metrics from the Confluent Cloud Metrics API (`POST /v2/metrics/cloud/query`, authenticated with the operator's Cloud API key) and present them per table:
+    - `io.confluent.tableflow/event_freshness_latency_milliseconds`: the age of the newest record written to the table, from the record's timestamp to when Tableflow wrote it.
+    - `io.confluent.tableflow/processing_freshness_latency_milliseconds`: Tableflow's processing time, from picking a record up to writing it.
+- Poll once a minute for the last 5 hours (the most the API allows at one-minute granularity), and show the latest value and a line graph for each metric.
+- Say that the metrics are in Preview, that Tableflow only updates them when it commits, and that data reaches the API a few minutes late.
+- PIMS does not derive latency from the data. The DuckDB container stays in the stack for a later feature, but the freshness charts do not use it.
 

@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useState} from 'react';
-import {api, AppState, errorText, LatencyPoint, LogEntry, Step, TableError} from './api';
+import {api, AppState, errorText, LatencyResult, LogEntry, Step} from './api';
 import {CredentialsForm} from './components/CredentialsForm';
 import {DataFlow} from './components/DataFlow';
 import {SetupSteps} from './components/SetupSteps';
@@ -11,13 +11,12 @@ import {events} from './api';
 
 const ACTIVITY_ID = 'activity';
 const MAX_LOGS = 500;
-const MAX_POINTS = 5000;
+const NO_LATENCY: LatencyResult = {event: null, processing: null};
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [points, setPoints] = useState<LatencyPoint[]>([]);
-  const [tableErrors, setTableErrors] = useState<TableError[]>([]);
+  const [latency, setLatency] = useState<LatencyResult>(NO_LATENCY);
   const [actionError, setActionError] = useState('');
   const [confirmTeardown, setConfirmTeardown] = useState(false);
 
@@ -25,8 +24,7 @@ export default function App() {
     const s = await api.getState();
     setState(s);
     setLogs(s.logs ?? []);
-    setPoints(s.latency ?? []);
-    setTableErrors(s.tableErrors ?? []);
+    setLatency(s.latency ?? NO_LATENCY);
   }, []);
 
   useEffect(() => {
@@ -35,10 +33,8 @@ export default function App() {
       events.onLog((e) => setLogs((l) => [...l.slice(-(MAX_LOGS - 1)), e])),
       events.onStep((step: Step) => setState((s) => s && {...s, steps: s.steps.map((x) => (x.id === step.id ? step : x))})),
       events.onSim((sim) => setState((s) => s && {...s, sim})),
-      events.onLatency((r) => {
-        if (r.points?.length) setPoints((p) => [...p, ...r.points!].slice(-MAX_POINTS));
-        setTableErrors(r.errors ?? []);
-      }),
+      // Each event is the whole current reading, so it replaces the last one.
+      events.onLatency(setLatency),
       events.onSetupDone((r) => { setActionError(r.error); refresh(); }),
       events.onTeardownDone((r) => { setActionError(r.error); refresh(); }),
     ];
@@ -73,7 +69,7 @@ export default function App() {
             <h1>PIMS</h1>
             <span className="sub">
               Streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud
-              Tableflow, and measuring how fresh they are · {state.awsRegion}
+              Tableflow, and showing how fresh they are · {state.awsRegion}
             </span>
           </div>
         </div>
@@ -109,7 +105,7 @@ export default function App() {
           <SetupSteps steps={state.steps}/>
         </section>
         <SimulationPanel sim={state.sim} limits={state.limits} ready={schemaReady}/>
-        <LatencyChart points={points} errors={tableErrors}/>
+        <LatencyChart latency={latency}/>
         <ActivityLog id={ACTIVITY_ID} logs={logs}/>
       </div>
     </div>

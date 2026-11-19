@@ -1,7 +1,8 @@
 // Package pipeline orchestrates the PIMS demo end to end: it provisions
 // Confluent Cloud, starts the local services, installs the schema,
-// registers Debezium, enables Tableflow and starts the latency monitor,
-// reporting progress step by step. It also owns the simulator.
+// registers Debezium, enables Tableflow and starts the monitor of Tableflow's
+// freshness metrics, reporting progress step by step. It also owns the
+// simulator.
 package pipeline
 
 import (
@@ -64,7 +65,7 @@ var Steps = []struct {
 	{StepSimulate, "Start simulator"},
 	{StepSchemas, "Wait for topic schemas"},
 	{StepTableflow, "Enable Tableflow"},
-	{StepLatency, "Start latency monitor"},
+	{StepLatency, "Start Tableflow metrics monitor"},
 }
 
 // Step statuses.
@@ -88,16 +89,18 @@ type StepState struct {
 // Deps are the operations the pipeline sequences. New wires the real
 // implementations; tests substitute fakes.
 type Deps struct {
-	CheckDocker  func(ctx context.Context) error
-	Provision    func(ctx context.Context, c config.Credentials, o terraform.ApplyOptions) (terraform.Outputs, error)
-	Destroy      func(ctx context.Context, c config.Credentials) error
-	StartLocal   func(ctx context.Context, out terraform.Outputs) (compose.MySQLSecrets, error)
-	StopLocal    func(ctx context.Context, removeVolumes bool) error
-	PrepareDB    func(ctx context.Context, s compose.MySQLSecrets) (sim.Store, io.Closer, error)
-	StartCDC     func(ctx context.Context, out terraform.Outputs, s compose.MySQLSecrets) error
-	StopCDC      func(ctx context.Context, s compose.MySQLSecrets) error
-	WaitSchemas  func(ctx context.Context, out terraform.Outputs) error
-	NewQuerier   func(out terraform.Outputs) (latency.Querier, error)
+	CheckDocker func(ctx context.Context) error
+	Provision   func(ctx context.Context, c config.Credentials, o terraform.ApplyOptions) (terraform.Outputs, error)
+	Destroy     func(ctx context.Context, c config.Credentials) error
+	StartLocal  func(ctx context.Context, out terraform.Outputs) (compose.MySQLSecrets, error)
+	StopLocal   func(ctx context.Context, removeVolumes bool) error
+	PrepareDB   func(ctx context.Context, s compose.MySQLSecrets) (sim.Store, io.Closer, error)
+	StartCDC    func(ctx context.Context, out terraform.Outputs, s compose.MySQLSecrets) error
+	StopCDC     func(ctx context.Context, s compose.MySQLSecrets) error
+	WaitSchemas func(ctx context.Context, out terraform.Outputs) error
+	// NewQuerier returns the reader of Tableflow's freshness metrics. The
+	// Metrics API takes a Cloud API key, so it gets the operator's.
+	NewQuerier   func(c config.Credentials, out terraform.Outputs) (latency.Querier, error)
 	PollInterval time.Duration
 	// Seed seeds the simulator; zero picks a time-based seed.
 	Seed uint64
@@ -281,7 +284,7 @@ func (p *Pipeline) Setup(ctx context.Context, creds config.Credentials) error {
 			}
 			return "Iceberg tables with Confluent managed storage", err
 		}},
-		{StepLatency, func() (string, error) { return "", p.startMonitor(out) }},
+		{StepLatency, func() (string, error) { return "", p.startMonitor(creds, out) }},
 	}
 	for _, s := range steps {
 		if err := p.run(s.id, s.fn); err != nil {
@@ -316,8 +319,8 @@ func (p *Pipeline) attachStore(store sim.Store, closer io.Closer) error {
 	return nil
 }
 
-func (p *Pipeline) startMonitor(out terraform.Outputs) error {
-	q, err := p.deps.NewQuerier(out)
+func (p *Pipeline) startMonitor(creds config.Credentials, out terraform.Outputs) error {
+	q, err := p.deps.NewQuerier(creds, out)
 	if err != nil {
 		return err
 	}

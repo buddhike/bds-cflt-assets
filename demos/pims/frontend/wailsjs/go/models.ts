@@ -21,36 +21,21 @@ export namespace config {
 
 export namespace latency {
 	
-	export class Point {
+	export class Sample {
 	    table: string;
-	    snapshotId: number;
-	    records: number;
 	    // Go type: time
-	    recordAt: any;
-	    // Go type: time
-	    newestAt: any;
-	    // Go type: time
-	    committedAt: any;
-	    latencyMs: number;
-	    minLatencyMs: number;
-	    // Go type: time
-	    observedAt: any;
+	    time: any;
+	    ms: number;
 	
 	    static createFrom(source: any = {}) {
-	        return new Point(source);
+	        return new Sample(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.table = source["table"];
-	        this.snapshotId = source["snapshotId"];
-	        this.records = source["records"];
-	        this.recordAt = this.convertValues(source["recordAt"], null);
-	        this.newestAt = this.convertValues(source["newestAt"], null);
-	        this.committedAt = this.convertValues(source["committedAt"], null);
-	        this.latencyMs = source["latencyMs"];
-	        this.minLatencyMs = source["minLatencyMs"];
-	        this.observedAt = this.convertValues(source["observedAt"], null);
+	        this.time = this.convertValues(source["time"], null);
+	        this.ms = source["ms"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -71,19 +56,42 @@ export namespace latency {
 		    return a;
 		}
 	}
-	export class TableError {
-	    table: string;
-	    error: string;
+	export class Result {
+	    event: Sample[];
+	    processing: Sample[];
+	    // Go type: time
+	    observedAt: any;
+	    error?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new TableError(source);
+	        return new Result(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.table = source["table"];
+	        this.event = this.convertValues(source["event"], Sample);
+	        this.processing = this.convertValues(source["processing"], Sample);
+	        this.observedAt = this.convertValues(source["observedAt"], null);
 	        this.error = source["error"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -154,8 +162,7 @@ export namespace main {
 	    steps: pipeline.StepState[];
 	    sim: sim.Stats;
 	    logs: logging.Entry[];
-	    latency: latency.Point[];
-	    tableErrors: latency.TableError[];
+	    latency: latency.Result;
 	    limits: Record<string, number>;
 	
 	    static createFrom(source: any = {}) {
@@ -171,8 +178,7 @@ export namespace main {
 	        this.steps = this.convertValues(source["steps"], pipeline.StepState);
 	        this.sim = this.convertValues(source["sim"], sim.Stats);
 	        this.logs = this.convertValues(source["logs"], logging.Entry);
-	        this.latency = this.convertValues(source["latency"], latency.Point);
-	        this.tableErrors = this.convertValues(source["tableErrors"], latency.TableError);
+	        this.latency = this.convertValues(source["latency"], latency.Result);
 	        this.limits = source["limits"];
 	    }
 	
