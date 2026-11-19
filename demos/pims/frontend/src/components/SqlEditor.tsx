@@ -1,4 +1,4 @@
-import {useEffect, useRef} from 'react';
+import {Ref, useEffect, useImperativeHandle, useRef} from 'react';
 import {Annotation, EditorState, Transaction} from '@codemirror/state';
 import {drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers, placeholder} from '@codemirror/view';
 import {defaultKeymap, history, historyKeymap} from '@codemirror/commands';
@@ -19,11 +19,11 @@ const DuckDB = SQLDialect.define({
 const theme = EditorView.theme({
   '&': {
     color: 'var(--text-primary)', backgroundColor: 'var(--surface-1)', fontSize: '13px',
-    border: '1px solid var(--border)', borderRadius: '8px', maxHeight: '360px',
+    border: '1px solid var(--border)', borderRadius: '8px', height: '100%',
   },
   '&.cm-focused': {outline: '2px solid var(--accent)', outlineOffset: '-1px'},
   '.cm-scroller': {fontFamily: 'var(--font-mono)', lineHeight: '1.55', overflow: 'auto'},
-  '.cm-content': {caretColor: 'var(--text-primary)', padding: '8px 0', minHeight: '120px'},
+  '.cm-content': {caretColor: 'var(--text-primary)', padding: '8px 0'},
   '.cm-line': {padding: '0 12px'},
   '.cm-cursor': {borderLeftColor: 'var(--text-primary)'},
   '.cm-gutters': {backgroundColor: 'transparent', color: 'var(--text-muted)', border: 'none'},
@@ -53,6 +53,12 @@ const highlight = HighlightStyle.define([
 // Marks edits the parent made, which it already knows about.
 const external = Annotation.define<boolean>();
 
+/** What a parent can ask of the editor. */
+export interface SqlEditorHandle {
+  /** Replaces the selection with `text` (so it lands at the cursor when nothing is selected) and focuses the editor. */
+  insert: (text: string) => void;
+}
+
 export interface SqlEditorProps {
   value: string;
   /** Called when the operator edits the text, not when `value` is replaced from outside. */
@@ -62,12 +68,33 @@ export interface SqlEditorProps {
   /** Called for Cmd/Ctrl+Enter. */
   onRun: () => void;
   placeholderText?: string;
+  handle?: Ref<SqlEditorHandle>;
 }
 
 /** SqlEditor is a CodeMirror editor with DuckDB SQL highlighting. */
-export function SqlEditor({value, onChange, onSelect, onRun, placeholderText}: SqlEditorProps) {
+export function SqlEditor({value, onChange, onSelect, onRun, placeholderText, handle}: SqlEditorProps) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
+  useImperativeHandle(handle, () => ({
+    insert(text) {
+      const v = view.current;
+      if (!v) return;
+      const {from, to} = v.state.selection.main;
+      const before = v.state.sliceDoc(Math.max(0, from - 1), from);
+      const after = v.state.sliceDoc(to, to + 1);
+      // Keep the name apart from a word it lands against, so two inserts in a row do not run together.
+      const pre = /[\w"')]/.test(before) ? ' ' : '';
+      const post = /[\w"(]/.test(after) ? ' ' : '';
+      // This is the operator's edit, so it reaches onChange and can be undone.
+      v.dispatch({
+        changes: {from, to, insert: pre + text + post},
+        selection: {anchor: from + pre.length + text.length},
+        scrollIntoView: true,
+        userEvent: 'input',
+      });
+      v.focus();
+    },
+  }), []);
   // The editor is built once, so it calls the latest callbacks through this.
   const callbacks = useRef({onChange, onSelect, onRun});
   useEffect(() => { callbacks.current = {onChange, onSelect, onRun}; });

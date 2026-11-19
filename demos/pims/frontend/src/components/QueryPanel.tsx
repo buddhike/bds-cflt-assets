@@ -1,7 +1,9 @@
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {api, errorText, QueryInfo, QueryResult} from '../api';
+import {useResize} from '../useResize';
 import {fmtDuration} from './LatencyChart';
-import {SqlEditor} from './SqlEditor';
+import {qualifiedName, SchemaHelper} from './SchemaHelper';
+import {SqlEditor, SqlEditorHandle} from './SqlEditor';
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const RUN_KEYS = IS_MAC ? '⌘↵' : 'Ctrl+Enter';
@@ -24,7 +26,28 @@ function useElapsed(active: boolean): number {
 function starterQuery(info: QueryInfo): string {
   const table = info.tables?.[0];
   if (!info.catalog || !info.namespace || !table) return 'SELECT version();\n';
-  return `SELECT *\nFROM ${info.catalog}."${info.namespace}".${table}\nLIMIT 10;\n`;
+  return `SELECT *\nFROM ${qualifiedName(info, table)}\nLIMIT 10;\n`;
+}
+
+const SCHEMA_OPEN_KEY = 'pims.schema.open';
+
+/** useSchemaOpen remembers whether the schema helper is showing; it starts open. */
+function useSchemaOpen(): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(SCHEMA_OPEN_KEY) !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  return [open, (o) => {
+    setOpen(o);
+    try {
+      localStorage.setItem(SCHEMA_OPEN_KEY, String(o));
+    } catch {
+      // A blocked store just forgets the choice.
+    }
+  }];
 }
 
 export function QueryPanel({info, ready}: {info: QueryInfo; ready: boolean}) {
@@ -36,7 +59,18 @@ export function QueryPanel({info, ready}: {info: QueryInfo; ready: boolean}) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState('');
+  const [schemaOpen, setSchemaOpen] = useSchemaOpen();
   const elapsed = useElapsed(running);
+  const editor = useRef<SqlEditorHandle>(null);
+  const main = useRef<HTMLDivElement>(null);
+  // The editor takes the height the operator drags it to; the results get the rest.
+  const split = useResize({
+    axis: 'y',
+    initial: 200,
+    min: 80,
+    max: () => Math.max(80, (main.current?.clientHeight ?? 600) - 120),
+    storageKey: 'pims.query.editor',
+  });
 
   useEffect(() => {
     if (!edited) setText(starter);
@@ -62,36 +96,62 @@ export function QueryPanel({info, ready}: {info: QueryInfo; ready: boolean}) {
 
   const tables = info.tables ?? [];
   return (
-    <section className="card query" aria-labelledby="query-title">
-      <header className="card-head">
+    <section className="query" aria-labelledby="query-title">
+      <header className="query-head">
         <h2 id="query-title">SQL</h2>
+        <span className="fine query-note">
+          {ready ? 'Runs in the DuckDB container, in a fresh session each time.' : 'Set up the demo to run queries.'}
+        </span>
         <div className="head-actions">
           <span className="fine query-keys">{RUN_KEYS} to run</span>
+          <button aria-pressed={schemaOpen} aria-controls="schema-panel" onClick={() => setSchemaOpen(!schemaOpen)}>
+            Tables
+          </button>
           <button className="primary" disabled={!canRun} onClick={run} title={ready ? undefined : 'Set up the demo first'}>
             {running ? `Running… ${elapsed}s` : selected.trim() ? 'Run selection' : 'Run'}
           </button>
         </div>
       </header>
 
-      <SqlEditor
-        value={text}
-        onChange={(t) => { setText(t); setEdited(true); }}
-        onSelect={setSelected}
-        onRun={run}
-        placeholderText="Write a DuckDB query"
-      />
+      <div className="query-body">
+        <div className="query-main" ref={main}>
+          <div className="query-editor" style={{height: split.size}}>
+            <SqlEditor
+              handle={editor}
+              value={text}
+              onChange={(t) => { setText(t); setEdited(true); }}
+              onSelect={setSelected}
+              onRun={run}
+              placeholderText="Write a DuckDB query"
+            />
+          </div>
+          <div
+            className={split.dragging ? 'resizer resizer-h is-dragging' : 'resizer resizer-h'}
+            aria-label="Resize the editor"
+            {...split.handleProps}
+          />
 
-      <p className="fine">
-        {ready ? 'Runs in the DuckDB container, in a fresh session each time. ' : 'Set up the demo to run queries. '}
-        {info.catalog && info.namespace
-          ? <>The Tableflow tables are attached as <code>{info.catalog}."{info.namespace}".&lt;table&gt;</code>
-            {tables.length > 0 && <>: {tables.map((t, i) => <span key={t}>{i > 0 && ', '}<code>{t}</code></span>)}</>}.
-            {' '}Try <code>DESCRIBE</code> to see a table's columns.</>
-          : <>Tableflow tables appear here once Tableflow is enabled.</>}
-      </p>
+          <div className="query-output">
+            {error && <p className="error query-error" role="alert">{error}</p>}
+            {result && <QueryResults result={result}/>}
+            {!error && !result && (
+              <p className="fine query-empty">
+                {info.catalog && info.namespace
+                  ? <>The Tableflow tables are attached as <code>{info.catalog}."{info.namespace}".&lt;table&gt;</code>
+                    {tables.length > 0 && <>: {tables.map((t, i) => <span key={t}>{i > 0 && ', '}<code>{t}</code></span>)}</>}.
+                    {' '}Try <code>DESCRIBE</code> to see a table's columns.</>
+                  : <>Tableflow tables appear here once Tableflow is enabled.</>}
+              </p>
+            )}
+          </div>
+        </div>
 
-      {error && <p className="error query-error" role="alert">{error}</p>}
-      {result && <QueryResults result={result}/>}
+        {schemaOpen && (
+          <div id="schema-panel" className="query-schema">
+            <SchemaHelper info={info} onInsert={(t) => editor.current?.insert(t)}/>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

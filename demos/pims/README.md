@@ -54,11 +54,13 @@ wails build        # produces build/bin/pims.app (macOS)
 
 1. Enter the AWS region and your Confluent Cloud API key and secret. The key
    and secret are kept in memory for the session only.
-2. Click **Set up demo** and follow the steps. First runs take roughly 10–15
-   minutes, mostly cluster provisioning and image builds. Setup starts the
-   simulator, because Debezium only registers a topic's schema with its first
-   record and Tableflow needs that schema.
-3. Adjust **events per second**, then watch the freshness charts. Tableflow
+2. Click **Set up demo** and follow the steps in the status bar along the
+   bottom of the window; click it to see each step. First runs take roughly
+   10–15 minutes, mostly cluster provisioning and image builds. Setup starts
+   the simulator, because Debezium only registers a topic's schema with its
+   first record and Tableflow needs that schema.
+3. Adjust **events per second** in the simulation bar under the header, then
+   open **Metrics** on the left to watch the freshness charts. Tableflow
    commits periodically and the Metrics API is a few minutes behind, so expect
    the first values several minutes after Tableflow is enabled.
 4. Click **Tear down** to delete the connector, local containers, the MySQL
@@ -76,10 +78,27 @@ Working files live in the OS config dir, e.g.
 
 Everything there is user-only (0700/0600).
 
+## Finding your way around
+
+- **Header**: set up or tear down the demo.
+- **Simulation bar**, just below it: the rate, **Start** and **Stop**. Once the
+  simulator has run it also shows the clinic clock and the counts, and
+  **Breakdown** adds the count of each kind of event.
+- **Rail on the left**: **Metrics**, **Logs** and **Data flow** each draw a
+  panel out beside the SQL window. Click the highlighted button again to close
+  it, and drag the panel's edge to resize it; each section remembers its width.
+  A badge on **Logs** counts errors, or warnings when there are no errors.
+- **SQL window**: the rest of the screen. **Tables** shows or hides the schema
+  helper beside the editor, and the line between the editor and the results
+  drags to give either more room.
+- **Status bar**, along the bottom: where setup is, with the AWS region and the
+  number of errors and warnings. Click it to draw out the setup steps, and drag
+  the top edge to resize them.
+
 ## How freshness is shown
 
-The **Data flow** panel under the header shows this path as a diagram, with the
-same explanation, and its arrows animate while the simulator runs.
+The **Data flow** section of the left-hand panel shows this path as a diagram,
+with the same explanation, and its arrows animate while the simulator runs.
 
 PIMS does not measure latency itself. Tableflow reports two gauges per table
 to the Confluent Cloud Metrics API, and PIMS charts them:
@@ -101,7 +120,7 @@ failed poll is not retried within the minute: the next one reads the whole
 window again, so nothing is lost. PIMS keeps nothing older, so anything beyond
 5 hours would need a coarser granularity or PIMS storing its own history.
 
-Each poll logs a `Queried Tableflow freshness metrics` line in the Activity log
+Each poll logs a `Queried Tableflow freshness metrics` line in the **Logs** section
 with how many samples came back for each metric, the time of the newest, and
 any topics in the answer that PIMS does not chart (`other_topics`). If a chart
 stays empty, that line tells apart "the API returned nothing for this window"
@@ -120,16 +139,21 @@ Things to know when reading the charts:
   rejects keys scoped to a Kafka cluster, and a `401` or `403` is shown in the
   panel with a hint. PIMS creates no extra key for this, so the demo's service
   account keeps its environment-only scope.
-- The charts do not read the Iceberg tables. The SQL window below does.
+- The charts do not read the Iceberg tables. The SQL window does.
 
 ## Querying the Tableflow tables
 
-The **SQL** card runs your own DuckDB SQL in the `duckdb` container. Once
+The **SQL** window runs your own DuckDB SQL in the `duckdb` container. Once
 Tableflow is enabled, PIMS attaches its Iceberg REST catalog as `tableflow`, so
 the tables are `tableflow."<kafka cluster id>".patients`, `.appointments` and
-`.visits`. The card shows the exact names and starts you off with a query for
+`.visits`. The window shows the exact names and starts you off with a query for
 one of them. Press `⌘↵` (`Ctrl+Enter` elsewhere) or **Run**; with text
 selected, only the selection runs. `DESCRIBE` shows a table's columns.
+
+The **Tables** helper beside the editor lists each table's columns with their
+types, keys and allowed values. Click a table's **Insert** button or a column
+name to put it in the query at the cursor. It describes the MySQL tables, so
+use `DESCRIBE` for the Iceberg tables' own types.
 
 Things to know:
 

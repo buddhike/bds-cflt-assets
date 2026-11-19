@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import {LogEntry} from '../api';
 
-export function ActivityLog({id, logs}: {id?: string; logs: LogEntry[]}) {
+export function ActivityLog({logs}: {logs: LogEntry[]}) {
   const box = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
 
@@ -10,7 +10,7 @@ export function ActivityLog({id, logs}: {id?: string; logs: LogEntry[]}) {
   }, [logs, follow]);
 
   return (
-    <section id={id} className="card log-card">
+    <section className="card log-card">
       <header className="card-head">
         <h2>Activity</h2>
         <label className="inline"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)}/> Follow</label>
@@ -20,8 +20,10 @@ export function ActivityLog({id, logs}: {id?: string; logs: LogEntry[]}) {
           <div key={i} className={`log-line log-${l.level.toLowerCase()}`}>
             <span className="log-time">{new Date(l.time).toLocaleTimeString()}</span>
             <span className="log-level">{l.level}</span>
-            <span className="log-msg">{l.message}</span>
-            {l.attrs && <span className="log-attrs">{l.attrs}</span>}
+            <span className="log-text">
+              <span className="log-msg">{l.message}</span>
+              {l.attrs && <>{' '}<span className="log-attrs">{l.attrs}</span></>}
+            </span>
           </div>
         ))}
       </div>

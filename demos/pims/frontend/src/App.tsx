@@ -1,16 +1,13 @@
 import {useCallback, useEffect, useState} from 'react';
 import {api, AppState, errorText, LatencyResult, LogEntry, Step} from './api';
 import {CredentialsForm} from './components/CredentialsForm';
-import {DataFlow} from './components/DataFlow';
-import {SetupSteps} from './components/SetupSteps';
-import {SimulationPanel} from './components/SimulationPanel';
-import {LatencyChart} from './components/LatencyChart';
+import {SimulationBar} from './components/SimulationBar';
 import {QueryPanel} from './components/QueryPanel';
-import {ActivityLog} from './components/ActivityLog';
+import {SidePanel, SideSection} from './components/SidePanel';
+import {StatusBar} from './components/StatusBar';
 import {Logo} from './components/Logo';
 import {events} from './api';
 
-const ACTIVITY_ID = 'activity';
 const MAX_LOGS = 500;
 const NO_LATENCY: LatencyResult = {event: null, processing: null};
 
@@ -20,6 +17,7 @@ export default function App() {
   const [latency, setLatency] = useState<LatencyResult>(NO_LATENCY);
   const [actionError, setActionError] = useState('');
   const [confirmTeardown, setConfirmTeardown] = useState(false);
+  const [side, setSide] = useState<SideSection | null>(null);
 
   const refresh = useCallback(async () => {
     const s = await api.getState();
@@ -69,21 +67,18 @@ export default function App() {
         <div className="brand">
           <Logo className="brand-mark"/>
           <div className="brand-text">
-            <h1>PIMS</h1>
-            <span className="sub">
+            <h1>Patient Information Management System</h1>
+            <span
+              className="sub"
+              title="Streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud Tableflow, and showing how fresh they are"
+            >
               Streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud
-              Tableflow, and showing how fresh they are · {state.awsRegion}
+              Tableflow, and showing how fresh they are
             </span>
           </div>
         </div>
         <div className="actions">
           {busy && <span className="pill pill-on">● {busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
-          <button onClick={() => document.getElementById(ACTIVITY_ID)?.scrollIntoView({block: 'start'})}>
-            Activity log
-            {errorCount > 0
-              ? <span className="badge-count" aria-label={`${errorCount} errors`}>{errorCount}</span>
-              : warnCount > 0 && <span className="badge-count badge-warn" aria-label={`${warnCount} warnings`}>{warnCount}</span>}
-          </button>
           <button className="primary" disabled={!!busy} onClick={() => run(api.setup)}>
             {stepsStarted ? 'Re-run setup' : 'Set up demo'}
           </button>
@@ -99,19 +94,33 @@ export default function App() {
         </div>
       </header>
 
+      <SimulationBar sim={state.sim} limits={state.limits} ready={schemaReady}/>
+
       {(actionError || state.lastError) && <p className="banner error" role="alert">{actionError || state.lastError}</p>}
 
-      <div className="grid">
-        <DataFlow active={state.sim.running}/>
-        <section className="card">
-          <header className="card-head"><h2>Setup</h2></header>
-          <SetupSteps steps={state.steps}/>
-        </section>
-        <SimulationPanel sim={state.sim} limits={state.limits} ready={schemaReady}/>
-        <LatencyChart latency={latency}/>
-        <QueryPanel info={state.query ?? {}} ready={queryReady}/>
-        <ActivityLog id={ACTIVITY_ID} logs={logs}/>
+      <div className="workspace">
+        <SidePanel
+          section={side}
+          onSelect={setSide}
+          logs={logs}
+          latency={latency}
+          simRunning={state.sim.running}
+          errorCount={errorCount}
+          warnCount={warnCount}
+        />
+        <main className="main">
+          <QueryPanel info={state.query ?? {}} ready={queryReady}/>
+        </main>
       </div>
+
+      <StatusBar
+        steps={state.steps}
+        busy={busy}
+        region={state.awsRegion}
+        errorCount={errorCount}
+        warnCount={warnCount}
+        onOpenLogs={() => setSide('logs')}
+      />
     </div>
   );
 }

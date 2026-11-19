@@ -104,7 +104,6 @@ export function DataFlow({active}: {active: boolean}) {
             <text x={col(3)} y={GROUP_Y + GROUP_H - 10}>Confluent Cloud</text>
           </g>
 
-          {/* Edges are paths, not lines: the stylesheet's `.grid line` rule would restyle <line> elements here. */}
           {DATA_EDGES.map((d) => <path key={d} className="edge edge-data" d={d} markerEnd="url(#flow-arrow-data)"/>)}
           {METRIC_EDGES.map((d) => <path key={d} className="edge edge-query" d={d} markerEnd="url(#flow-arrow-query)"/>)}
           <text className="edge-label" x={(col(4) + col(2) + NODE_W) / 2} y={MID2 - 8} textAnchor="middle">
