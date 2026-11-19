@@ -4,6 +4,22 @@ Patient Information Management System: a demo of how a clinic's operational
 database can be given a live analytical copy for business reporting, using
 Debezium and Confluent Cloud Tableflow.
 
+## Download
+
+| Platform | Download |
+|---|---|
+| macOS (Apple Silicon and Intel) | [pims_0.2.0_macos_universal.zip](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.2.0/pims_0.2.0_macos_universal.zip) |
+| Windows (x64) | [pims_0.2.0_windows_amd64.exe](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.2.0/pims_0.2.0_windows_amd64.exe) |
+
+> [!NOTE]
+> **macOS:** the app is not notarized, so macOS blocks a copy downloaded in a
+> browser. After unzipping, clear the quarantine flag once from Terminal, in the
+> folder that holds `pims.app`, then open the app:
+>
+> ```sh
+> xattr -dr com.apple.quarantine pims.app
+> ```
+
 ## How the clinic works
 
 PIMS models a busy outpatient clinic with General Practice, Paediatrics,
