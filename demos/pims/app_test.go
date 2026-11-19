@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,6 +56,64 @@ func TestSetCredentialsKeepsSecretInMemoryOnly(t *testing.T) {
 	}
 	if got := a.GetDefaults().AWSRegion; got != "eu-west-1" {
 		t.Fatalf("defaults region = %q", got)
+	}
+}
+
+// The suffix lives in the same file as the region. SetCredentials rewrites
+// that file on every launch, so it must not lose the suffix.
+func TestSetCredentialsKeepsSuffix(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.ws.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	suffix, err := a.ws.Suffix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetCredentials(config.Credentials{AWSRegion: "eu-west-1", APIKey: "key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := a.ws.LoadSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Suffix != suffix || saved.AWSRegion != "eu-west-1" {
+		t.Fatalf("settings = %+v, want suffix %q and region eu-west-1", saved, suffix)
+	}
+	if got, err := a.ws.Suffix(); err != nil || got != suffix {
+		t.Fatalf("Suffix() = %q, %v, want %q", got, err, suffix)
+	}
+}
+
+// A settings file that can't be parsed (say, a typo from hand-editing the
+// suffix) is left alone so the suffix isn't silently replaced. The
+// credentials are still accepted for the session.
+func TestSetCredentialsLeavesUnreadableSettingsAlone(t *testing.T) {
+	a := newTestApp(t)
+	if err := a.ws.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(a.ws.Root, "settings.json")
+	const damaged = `{"awsRegion":"us-east-1","suffix":"bds",}`
+	if err := os.WriteFile(path, []byte(damaged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.SetCredentials(config.Credentials{AWSRegion: "eu-west-1", APIKey: "key", APISecret: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if !a.GetState().HasCredentials {
+		t.Fatal("credentials were not accepted")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != damaged {
+		t.Fatalf("settings.json was rewritten to %q", got)
+	}
+	if _, err := a.ws.Suffix(); err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("Suffix() error = %v, want one naming %s", err, path)
 	}
 }
 

@@ -205,7 +205,8 @@ func (a *App) GetDefaults() Defaults {
 }
 
 // SetCredentials validates and keeps the operator's Confluent Cloud
-// credentials in memory for this session. Only the region is saved.
+// credentials in memory for this session. Only the region is saved; the
+// secrets never reach disk.
 func (a *App) SetCredentials(c config.Credentials) error {
 	c = c.Normalise()
 	if err := c.Validate(); err != nil {
@@ -214,8 +215,18 @@ func (a *App) SetCredentials(c config.Credentials) error {
 	if err := a.ws.Ensure(); err != nil {
 		return err
 	}
-	if err := a.ws.SaveSettings(config.Settings{AWSRegion: c.AWSRegion}); err != nil {
-		a.log.Warn("Could not save settings", "error", err)
+	// Update the region in place: the settings also hold the resource-name
+	// suffix, which must survive. A file that can't be read is left as it is,
+	// not replaced, because replacing it would drop the suffix and rename the
+	// live Confluent Cloud resources on the next setup. Setup then reports the
+	// problem with the file's path.
+	if saved, err := a.ws.LoadSettings(); err != nil {
+		a.log.Warn("Could not read saved settings, leaving the file as it is", "error", err)
+	} else {
+		saved.AWSRegion = c.AWSRegion
+		if err := a.ws.SaveSettings(saved); err != nil {
+			a.log.Warn("Could not save settings", "error", err)
+		}
 	}
 	a.mu.Lock()
 	a.creds = &c

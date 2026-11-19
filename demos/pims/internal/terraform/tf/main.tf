@@ -24,12 +24,16 @@ provider "confluent" {}
 locals {
   # Debezium routes each MySQL table to the topic of the same name.
   tables = toset(["patients", "visits", "appointments"])
+
+  # Environment and service account names are unique within a Confluent Cloud
+  # organisation, so the suffix lets several operators share one account.
+  name = "${var.name}-${var.name_suffix}"
 }
 
 data "confluent_organization" "this" {}
 
 resource "confluent_environment" "pims" {
-  display_name = var.name
+  display_name = local.name
 
   stream_governance {
     package = "ESSENTIALS"
@@ -37,7 +41,7 @@ resource "confluent_environment" "pims" {
 }
 
 resource "confluent_kafka_cluster" "pims" {
-  display_name = var.name
+  display_name = local.name
   availability = "SINGLE_ZONE"
   cloud        = "AWS"
   region       = var.aws_region
@@ -59,7 +63,7 @@ data "confluent_schema_registry_cluster" "pims" {
 # One service account owns every key PIMS uses. It is scoped to the demo
 # environment only, so it cannot touch anything else in the organisation.
 resource "confluent_service_account" "pims" {
-  display_name = "${var.name}-${confluent_environment.pims.id}"
+  display_name = "${local.name}-${confluent_environment.pims.id}"
   description  = "PIMS demo: Debezium, Schema Registry and Tableflow access"
 }
 
@@ -70,7 +74,7 @@ resource "confluent_role_binding" "pims_env_admin" {
 }
 
 resource "confluent_api_key" "kafka" {
-  display_name = "${var.name}-kafka"
+  display_name = "${local.name}-kafka"
   description  = "PIMS Kafka Connect / Debezium"
 
   owner {
@@ -93,7 +97,7 @@ resource "confluent_api_key" "kafka" {
 }
 
 resource "confluent_api_key" "schema_registry" {
-  display_name = "${var.name}-schema-registry"
+  display_name = "${local.name}-schema-registry"
   description  = "PIMS Avro converter access to Schema Registry"
 
   owner {
@@ -116,7 +120,7 @@ resource "confluent_api_key" "schema_registry" {
 }
 
 resource "confluent_api_key" "tableflow" {
-  display_name = "${var.name}-tableflow"
+  display_name = "${local.name}-tableflow"
   description  = "PIMS Tableflow and Iceberg REST catalog access"
 
   owner {

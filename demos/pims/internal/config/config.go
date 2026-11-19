@@ -2,11 +2,14 @@
 // workspace layout used by PIMS.
 //
 // Confluent Cloud API secrets are kept in memory only. They are never
-// written to disk by this package; the only persisted value is the last
-// AWS region used, so the setup form can be pre-filled.
+// written to disk by this package. The persisted values are the last AWS
+// region used, so the setup form can be pre-filled, and the random suffix
+// that keeps this operator's Confluent Cloud resource names distinct.
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,9 +143,53 @@ func (w Workspace) Ensure() error {
 	return nil
 }
 
+// suffixBytes is the number of random bytes behind a suffix. Each byte is
+// two hex characters, so three bytes give names such as pims-3fa9c1: enough
+// that two operators sharing a Confluent Cloud account will not collide.
+const suffixBytes = 3
+
+// suffixPattern is what a suffix may look like: lowercase letters and digits,
+// which every Confluent Cloud name accepts. It admits a hand-edited value
+// (say, an operator's initials) but not one that would break a resource name;
+// an invalid saved suffix is replaced.
+var suffixPattern = regexp.MustCompile(`^[a-z0-9]{3,12}$`)
+
 // Settings are the non-secret values remembered between launches.
 type Settings struct {
 	AWSRegion string `json:"awsRegion"`
+	// Suffix is appended to the name of the Confluent Cloud environment and
+	// service account (pims-<suffix>), so operators who share a Confluent
+	// Cloud account can each run the demo. It is created on first use and
+	// never changes afterwards.
+	Suffix string `json:"suffix,omitempty"`
+}
+
+// NewSuffix returns a fresh random resource-name suffix.
+func NewSuffix() (string, error) {
+	b := make([]byte, suffixBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate suffix: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// Suffix returns the persisted resource-name suffix, creating and saving one
+// when none exists yet. The workspace must already exist (see Ensure).
+func (w Workspace) Suffix() (string, error) {
+	s, err := w.LoadSettings()
+	if err != nil {
+		return "", err
+	}
+	if suffixPattern.MatchString(s.Suffix) {
+		return s.Suffix, nil
+	}
+	if s.Suffix, err = NewSuffix(); err != nil {
+		return "", err
+	}
+	if err := w.SaveSettings(s); err != nil {
+		return "", err
+	}
+	return s.Suffix, nil
 }
 
 // LoadSettings reads persisted settings. A missing file is not an error.

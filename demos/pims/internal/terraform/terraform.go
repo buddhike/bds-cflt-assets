@@ -109,6 +109,11 @@ func (r *Runner) Apply(ctx context.Context, creds config.Credentials, opts Apply
 	}
 	defer out.Flush()
 
+	suffix, err := r.ws.Suffix()
+	if err != nil {
+		return Outputs{}, err
+	}
+
 	prev, err := r.existingOutputs(ctx, tf)
 	if err != nil {
 		return Outputs{}, err
@@ -118,8 +123,8 @@ func (r *Runner) Apply(ctx context.Context, creds config.Credentials, opts Apply
 		return Outputs{}, err
 	}
 
-	r.log.Info("Applying Confluent Cloud configuration", "aws_region", creds.AWSRegion, "enable_tableflow", opts.EnableTableflow)
-	if err := tf.Apply(ctx, applyVars(creds, opts)...); err != nil {
+	r.log.Info("Applying Confluent Cloud configuration", "aws_region", creds.AWSRegion, "name_suffix", suffix, "enable_tableflow", opts.EnableTableflow)
+	if err := tf.Apply(ctx, applyVars(creds, suffix, opts)...); err != nil {
 		return Outputs{}, fmt.Errorf("terraform apply: %w", err)
 	}
 	return r.outputs(ctx, tf)
@@ -178,8 +183,9 @@ func (r *Runner) Destroy(ctx context.Context, creds config.Credentials) error {
 		return err
 	}
 	defer out.Flush()
-	r.log.Info("Destroying Confluent Cloud resources", "aws_region", creds.AWSRegion)
-	if err := tf.Destroy(ctx, tfexec.Var("aws_region="+creds.AWSRegion)); err != nil {
+	suffix := r.destroySuffix()
+	r.log.Info("Destroying Confluent Cloud resources", "aws_region", creds.AWSRegion, "name_suffix", suffix)
+	if err := tf.Destroy(ctx, destroyVars(creds, suffix)...); err != nil {
 		return fmt.Errorf("terraform destroy: %w", err)
 	}
 	return nil
@@ -293,10 +299,36 @@ func decodeOutputs(raw map[string]tfexec.OutputMeta) (Outputs, error) {
 	return out, nil
 }
 
-func applyVars(creds config.Credentials, opts ApplyOptions) []tfexec.ApplyOption {
+func applyVars(creds config.Credentials, suffix string, opts ApplyOptions) []tfexec.ApplyOption {
 	return []tfexec.ApplyOption{
 		tfexec.Var("aws_region=" + creds.AWSRegion),
+		tfexec.Var("name_suffix=" + suffix),
 		tfexec.Var("enable_tableflow=" + strconv.FormatBool(opts.EnableTableflow)),
+	}
+}
+
+// placeholderSuffix stands in for the suffix when destroy cannot read it.
+const placeholderSuffix = "destroy"
+
+// destroySuffix returns the saved suffix, or a placeholder when settings.json
+// is unreadable. Destroy removes resources by ID, so the name makes no
+// difference to it, and a damaged settings file must never stand in the way of
+// tearing down billable resources.
+func (r *Runner) destroySuffix() string {
+	suffix, err := r.ws.Suffix()
+	if err != nil {
+		r.log.Warn("Could not read the saved suffix, destroying with a placeholder", "error", err)
+		return placeholderSuffix
+	}
+	return suffix
+}
+
+// destroyVars supplies the variables that have no default. Names do not
+// affect what destroy removes, but Terraform still needs a valid value.
+func destroyVars(creds config.Credentials, suffix string) []tfexec.DestroyOption {
+	return []tfexec.DestroyOption{
+		tfexec.Var("aws_region=" + creds.AWSRegion),
+		tfexec.Var("name_suffix=" + suffix),
 	}
 }
 

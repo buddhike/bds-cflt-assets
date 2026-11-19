@@ -104,12 +104,20 @@ one environment dedicated to the demo. It runs in two phases.
 
 | Resource | Notes |
 |---|---|
-| Environment | Stream Governance Essentials, which provides Schema Registry |
-| Kafka cluster | Standard, single zone, on AWS in the chosen region |
+| Environment | Named `pims-<suffix>`. Stream Governance Essentials, which provides Schema Registry |
+| Kafka cluster | Named `pims-<suffix>`. Standard, single zone, on AWS in the chosen region |
 | Topics | `patients`, `visits` and `appointments`, with `cleanup.policy=compact` |
-| Service account | Holds an environment-scoped `EnvironmentAdmin` role and nothing wider |
+| Service account | Named `pims-<suffix>-<environment id>`. Holds an environment-scoped `EnvironmentAdmin` role and nothing wider |
 | API keys | One each for Kafka, Schema Registry and Tableflow, owned by the service account |
 | Tableflow | Enabled on each topic as an Iceberg table in managed storage |
+
+`<suffix>` is six random hex characters, generated the first time the app sets
+up Confluent Cloud and saved as `suffix` in `settings.json` in the workspace.
+Environment and service account names are unique within a Confluent Cloud
+organisation, so the suffix lets several operators run the demo in one account
+without colliding. It is kept across launches and after teardown, and is the
+only setting besides the AWS region that the app saves. Everything else the
+demo creates lives inside the operator's own environment and needs no suffix.
 
 **Phase 1** creates everything except Tableflow. **Phase 2** enables Tableflow.
 They are separate because Tableflow cannot be enabled on a topic that has no

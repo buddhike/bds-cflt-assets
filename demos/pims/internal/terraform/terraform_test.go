@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -61,16 +62,41 @@ func TestProcessEnvCarriesCredentialsAndDropsManagedVars(t *testing.T) {
 
 func TestApplyVarsNeverIncludeSecrets(t *testing.T) {
 	creds := config.Credentials{AWSRegion: "us-east-1", APIKey: "key", APISecret: "secret"}
-	for _, v := range applyVars(creds, ApplyOptions{EnableTableflow: true}) {
+	for _, v := range applyVars(creds, "3fa9c1", ApplyOptions{EnableTableflow: true}) {
 		s := strings.ToLower(strings.TrimSpace(fmtOption(v)))
 		if strings.Contains(s, "secret") || strings.Contains(s, "key") {
 			t.Fatalf("apply var leaks credentials: %s", s)
 		}
 	}
+	for _, v := range destroyVars(creds, "3fa9c1") {
+		s := strings.ToLower(strings.TrimSpace(fmtOption(v)))
+		if strings.Contains(s, "secret") || strings.Contains(s, "key") {
+			t.Fatalf("destroy var leaks credentials: %s", s)
+		}
+	}
+}
+
+// The suffix is what keeps two operators in one account apart, so both
+// phases of apply and destroy must pass it to Terraform.
+func TestVarsCarryNameSuffix(t *testing.T) {
+	creds := config.Credentials{AWSRegion: "us-east-1", APIKey: "k", APISecret: "s"}
+	want := "name_suffix=3fa9c1"
+	var apply, destroy []string
+	for _, v := range applyVars(creds, "3fa9c1", ApplyOptions{}) {
+		apply = append(apply, fmtOption(v))
+	}
+	for _, v := range destroyVars(creds, "3fa9c1") {
+		destroy = append(destroy, fmtOption(v))
+	}
+	for name, got := range map[string][]string{"apply": apply, "destroy": destroy} {
+		if !strings.Contains(strings.Join(got, " "), want) {
+			t.Errorf("%s vars %v lack %q", name, got, want)
+		}
+	}
 }
 
 // fmtOption renders the option including its unexported assignment.
-func fmtOption(o tfexec.ApplyOption) string { return fmt.Sprintf("%+v", o) }
+func fmtOption(o any) string { return fmt.Sprintf("%+v", o) }
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
@@ -152,5 +178,72 @@ func TestWriteConfigRemovesStaleFilesAndWritesLock(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".terraform.lock.hcl")); err != nil {
 		t.Fatalf("lock file not written: %v", err)
+	}
+}
+
+// Destroy removes resources by ID, so a damaged settings.json must not stop it.
+func TestDestroySuffix(t *testing.T) {
+	ws := config.Workspace{Root: t.TempDir()}
+	if err := ws.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(ws, discardLogger())
+
+	saved, err := ws.Suffix()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.destroySuffix(); got != saved {
+		t.Fatalf("destroySuffix() = %q, want the saved %q", got, saved)
+	}
+
+	if err := os.WriteFile(filepath.Join(ws.Root, "settings.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := r.destroySuffix()
+	if got != placeholderSuffix {
+		t.Fatalf("destroySuffix() = %q with unreadable settings, want %q", got, placeholderSuffix)
+	}
+	if !suffixValidation(t).MatchString(got) {
+		t.Fatalf("placeholder %q would be rejected by the name_suffix validation", got)
+	}
+}
+
+// suffixValidation returns the regex that variables.tf applies to name_suffix.
+func suffixValidation(t *testing.T) *regexp.Regexp {
+	t.Helper()
+	b, err := configFS.ReadFile("tf/variables.tf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`regex\("([^"]+)", var\.name_suffix\)`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("variables.tf has no regex validation for name_suffix")
+	}
+	return regexp.MustCompile(string(m[1]))
+}
+
+// The Go side generates and checks suffixes; Terraform checks them again.
+// They must agree, or a suffix PIMS accepts would fail at apply time.
+func TestSuffixValidationMatchesConfig(t *testing.T) {
+	re := suffixValidation(t)
+	for range 20 {
+		s, err := config.NewSuffix()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !re.MatchString(s) {
+			t.Fatalf("generated suffix %q rejected by variables.tf", s)
+		}
+	}
+	for _, ok := range []string{"bds", "3fa9c1", "abcdefghij12"} {
+		if !re.MatchString(ok) {
+			t.Errorf("variables.tf rejects %q", ok)
+		}
+	}
+	for _, bad := range []string{"", "ab", "ABC123", "a-b-c", "abcdefghijklm", "abc\n"} {
+		if re.MatchString(bad) {
+			t.Errorf("variables.tf accepts %q", bad)
+		}
 	}
 }
