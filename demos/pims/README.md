@@ -8,8 +8,8 @@ Debezium and Confluent Cloud Tableflow.
 
 | Platform | Download |
 |---|---|
-| macOS (Apple Silicon and Intel) | [pims_0.3.0_macos_universal.zip](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.3.0/pims_0.3.0_macos_universal.zip) |
-| Windows (x64) | [pims_0.3.0_windows_amd64.exe](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.3.0/pims_0.3.0_windows_amd64.exe) |
+| macOS (Apple Silicon and Intel) | [pims_0.4.0_macos_universal.zip](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.4.0/pims_0.4.0_macos_universal.zip) |
+| Windows (x64) | [pims_0.4.0_windows_amd64.exe](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.4.0/pims_0.4.0_windows_amd64.exe) |
 
 > [!NOTE]
 > **macOS:** the app is not notarized, so macOS blocks a copy downloaded in a
