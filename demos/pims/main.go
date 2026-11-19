@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"pims/internal/config"
+	"pims/internal/hostenv"
 	"pims/internal/logging"
 )
 
@@ -20,6 +21,9 @@ import (
 var assets embed.FS
 
 func main() {
+	// Before anything can look for docker: a Finder launch has no shell PATH.
+	addedToPath, pathErr := hostenv.EnsureToolPath()
+
 	ws, err := config.DefaultWorkspace()
 	if err != nil {
 		slog.Error("Could not resolve workspace", "error", err)
@@ -31,6 +35,11 @@ func main() {
 	log := slog.New(logging.NewTeeHandler(base, app.onLog))
 	slog.SetDefault(log)
 	app.attachLogger(log)
+	if pathErr != nil {
+		log.Warn("Could not add tool directories to PATH", "error", pathErr)
+	} else if len(addedToPath) > 0 {
+		log.Info("Added tool directories to PATH", "dirs", addedToPath)
+	}
 
 	err = wails.Run(&options.App{
 		Title:     "PIMS · Tableflow CDC demo",
