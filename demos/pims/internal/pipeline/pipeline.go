@@ -17,6 +17,7 @@ import (
 	"pims/internal/compose"
 	"pims/internal/config"
 	"pims/internal/latency"
+	"pims/internal/query"
 	"pims/internal/sim"
 	"pims/internal/terraform"
 )
@@ -27,6 +28,9 @@ var ErrBusy = errors.New("another setup or teardown is in progress")
 // ErrNotReady is returned when the simulator is used before setup has
 // prepared the database.
 var ErrNotReady = errors.New("run setup first")
+
+// ErrQueryBusy is returned when a query is run while another is running.
+var ErrQueryBusy = errors.New("a query is already running")
 
 // ErrClosed is returned once the pipeline is closed or tearing down.
 var ErrClosed = errors.New("pipeline is shutting down")
@@ -100,7 +104,10 @@ type Deps struct {
 	WaitSchemas func(ctx context.Context, out terraform.Outputs) error
 	// NewQuerier returns the reader of Tableflow's freshness metrics. The
 	// Metrics API takes a Cloud API key, so it gets the operator's.
-	NewQuerier   func(c config.Credentials, out terraform.Outputs) (latency.Querier, error)
+	NewQuerier func(c config.Credentials, out terraform.Outputs) (latency.Querier, error)
+	// RunQuery runs the operator's SQL in the DuckDB container, with the
+	// Tableflow catalog attached when out says Tableflow is enabled.
+	RunQuery     func(ctx context.Context, out terraform.Outputs, sql string) (query.Result, error)
 	PollInterval time.Duration
 	// Seed seeds the simulator; zero picks a time-based seed.
 	Seed uint64
@@ -113,7 +120,8 @@ type Pipeline struct {
 	onStep    func(StepState)
 	onLatency func(latency.Result)
 
-	busy sync.Mutex // held for the duration of Setup/Teardown
+	busy      sync.Mutex // held for the duration of Setup/Teardown
+	queryBusy sync.Mutex // held while a query runs
 
 	mu          sync.Mutex
 	steps       map[StepID]StepState
@@ -281,6 +289,11 @@ func (p *Pipeline) Setup(ctx context.Context, creds config.Credentials) error {
 			o, err := p.deps.Provision(ctx, creds, terraform.ApplyOptions{EnableTableflow: true})
 			if err == nil {
 				out = o
+				// The query window attaches the catalog as soon as Tableflow
+				// is on, even if a later step fails.
+				p.mu.Lock()
+				p.outputs = &o
+				p.mu.Unlock()
 			}
 			return "Iceberg tables with Confluent managed storage", err
 		}},
@@ -416,6 +429,57 @@ func (p *Pipeline) SimStats() sim.Stats {
 		return sim.Stats{}
 	}
 	return s.Stats()
+}
+
+// QueryInfo tells the UI what the query window can reach. It is empty until
+// Tableflow is enabled, when queries run in plain DuckDB.
+type QueryInfo struct {
+	// Catalog is the DuckDB catalog the Tableflow tables are attached as.
+	Catalog string `json:"catalog,omitempty"`
+	// Namespace is the schema in Catalog that holds the tables.
+	Namespace string   `json:"namespace,omitempty"`
+	Tables    []string `json:"tables,omitempty"`
+}
+
+// queryOutputs returns the outputs to run queries with, which carry the
+// Tableflow catalog credentials. They are those of a setup run in this
+// session, and only once it has started the DuckDB container: Terraform's
+// outputs are known long before that. The caller must hold p.mu.
+func (p *Pipeline) queryOutputs() (*terraform.Outputs, error) {
+	switch {
+	case p.closed:
+		return nil, ErrClosed
+	case p.outputs == nil || p.steps[StepServices].Status != StatusDone:
+		return nil, ErrNotReady
+	}
+	return p.outputs, nil
+}
+
+// QueryInfo returns where the Tableflow tables can be queried from.
+func (p *Pipeline) QueryInfo() QueryInfo {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out, err := p.queryOutputs()
+	if err != nil || !out.TableflowEnabled {
+		return QueryInfo{}
+	}
+	return QueryInfo{Catalog: query.CatalogName, Namespace: out.KafkaClusterID, Tables: out.Topics}
+}
+
+// Query runs sql in the DuckDB container and returns the last result set.
+// One query runs at a time.
+func (p *Pipeline) Query(ctx context.Context, sql string) (query.Result, error) {
+	p.mu.Lock()
+	out, err := p.queryOutputs()
+	p.mu.Unlock()
+	if err != nil {
+		return query.Result{}, err
+	}
+	if !p.queryBusy.TryLock() {
+		return query.Result{}, ErrQueryBusy
+	}
+	defer p.queryBusy.Unlock()
+	return p.deps.RunQuery(ctx, *out, sql)
 }
 
 // Teardown stops everything and deletes all resources: the local

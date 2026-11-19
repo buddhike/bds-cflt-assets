@@ -255,3 +255,17 @@ func TestTeardownClearsLatency(t *testing.T) {
 		t.Fatalf("state after teardown = %+v, want it cleared", got)
 	}
 }
+
+func TestRunQueryNeedsStartupAndSetup(t *testing.T) {
+	a := newTestApp(t)
+	if _, err := a.RunQuery("SELECT 1"); !errors.Is(err, ErrNotStarted) {
+		t.Fatalf("RunQuery() before startup = %v, want ErrNotStarted", err)
+	}
+	a.ctx = context.Background() // as if Wails had called startup
+	if _, err := a.RunQuery("SELECT 1"); !errors.Is(err, pipeline.ErrNotReady) {
+		t.Fatalf("RunQuery() before setup = %v, want ErrNotReady", err)
+	}
+	if q := a.GetState().Query; q.Catalog != "" || len(q.Tables) != 0 {
+		t.Fatalf("state.Query = %+v before setup, want none", q)
+	}
+}

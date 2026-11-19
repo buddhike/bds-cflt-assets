@@ -12,6 +12,7 @@ import (
 	"pims/internal/config"
 	"pims/internal/connector"
 	"pims/internal/latency"
+	"pims/internal/query"
 	"pims/internal/schema"
 	"pims/internal/sim"
 	"pims/internal/terraform"
@@ -111,6 +112,24 @@ func NewDeps(ws config.Workspace, log *slog.Logger) Deps {
 		},
 		NewQuerier: func(c config.Credentials, out terraform.Outputs) (latency.Querier, error) {
 			return latency.NewMetricsAPI(latency.DefaultEndpoint, out.KafkaClusterID, c.APIKey, c.APISecret, schema.Tables)
+		},
+		RunQuery: func(ctx context.Context, out terraform.Outputs, sql string) (query.Result, error) {
+			// The tables exist only once Tableflow is enabled; before that the
+			// operator can still run plain DuckDB.
+			var catalog *query.Catalog
+			if out.TableflowEnabled {
+				catalog = &query.Catalog{
+					Endpoint:  out.TableflowCatalogEndpoint,
+					APIKey:    out.TableflowAPIKey,
+					APISecret: out.TableflowAPISecret,
+					Namespace: out.KafkaClusterID,
+				}
+			}
+			r, err := query.New(project, compose.ServiceDuckDB, catalog)
+			if err != nil {
+				return query.Result{}, err
+			}
+			return r.Run(ctx, sql)
 		},
 		PollInterval: pollInterval,
 	}

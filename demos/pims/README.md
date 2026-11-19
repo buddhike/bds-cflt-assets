@@ -20,12 +20,14 @@ PIMS is a [Wails](https://wails.io) (Go + React) app that:
    compacted topics, API keys and Tableflow (Terraform run in-process). It
    also starts MySQL, Kafka Connect with Debezium, and a DuckDB container for
    querying the Iceberg tables (Docker Compose), then installs the schema and
-   registers the connector. The charts do not use DuckDB.
+   registers the connector. The charts do not use DuckDB; the SQL window does.
 2. **Simulates a clinic**: patient registrations, bookings, check-ins,
    walk-ins, no-shows, cancellations and visit completions, at a rate you set.
 3. **Charts freshness**: how fresh each Iceberg table is, using Tableflow's own
    `event_freshness_latency_milliseconds` and
    `processing_freshness_latency_milliseconds` metrics, per table.
+4. **Runs your SQL**: a query window with DuckDB syntax highlighting that runs
+   in the DuckDB container, with the Tableflow tables attached.
 
 ## Prerequisites
 
@@ -118,8 +120,42 @@ Things to know when reading the charts:
   rejects keys scoped to a Kafka cluster, and a `401` or `403` is shown in the
   panel with a hint. PIMS creates no extra key for this, so the demo's service
   account keeps its environment-only scope.
-- The DuckDB container still starts with the rest of the stack, but nothing
-  reads Tableflow through it for these charts.
+- The charts do not read the Iceberg tables. The SQL window below does.
+
+## Querying the Tableflow tables
+
+The **SQL** card runs your own DuckDB SQL in the `duckdb` container. Once
+Tableflow is enabled, PIMS attaches its Iceberg REST catalog as `tableflow`, so
+the tables are `tableflow."<kafka cluster id>".patients`, `.appointments` and
+`.visits`. The card shows the exact names and starts you off with a query for
+one of them. Press `⌘↵` (`Ctrl+Enter` elsewhere) or **Run**; with text
+selected, only the selection runs. `DESCRIBE` shows a table's columns.
+
+Things to know:
+
+- Each run is a **fresh DuckDB session**. The catalog is attached again, which
+  takes a couple of seconds, and nothing a run creates (tables, settings) is
+  there for the next one.
+- You can run several statements at once. The result of the last one that
+  returned rows is shown, and the run stops at the first error.
+- A result shows its first 1,000 rows and says how many there were in all.
+  Output over 8 MiB is refused: add a `LIMIT` or select fewer columns.
+- A run is cut off after 5 minutes, inside the container too, so a runaway
+  query does not keep using it. DuckDB may use 2 GB of memory and spills to
+  disk beyond that. One query runs at a time.
+- **Reading a Tableflow table is slow on a high-latency network.** DuckDB reads
+  every manifest of the table before any data, even under a `LIMIT`, and each
+  file is a separate request to S3. A table with ~130 manifests and ~390 data
+  files took 3 minutes over a 320 ms link (about 1 second per new connection
+  without connection reuse, which PIMS turns on) and is a few seconds on a fast
+  one. The button shows the elapsed time while it runs. `DESCRIBE` only reads
+  the table's metadata and takes seconds.
+- Only SQL is accepted. A line starting with `.`, which the DuckDB shell takes
+  as one of its own commands (`.mode`, `.shell`), is rejected.
+- The session has the demo's Tableflow API key loaded to read the catalog, so
+  do not run SQL you do not trust.
+- The Tableflow credentials come from the setup run, so after relaunching PIMS
+  run setup again before querying. It resumes where things are.
 
 ## Project layout
 
@@ -134,6 +170,7 @@ Things to know when reading the charts:
 | `internal/connector` | Kafka Connect and Schema Registry REST clients |
 | `internal/sim` | Clinic simulator: domain model, rate-limited runner, MySQL store |
 | `internal/latency` | Metrics API client and monitor for Tableflow's freshness metrics |
+| `internal/query` | Runs the SQL window's queries in the DuckDB container and parses the results |
 | `internal/config`, `logging`, `retry` | Credentials and workspace, slog tee to the UI, backoff |
 
 ## Releasing

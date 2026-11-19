@@ -15,6 +15,7 @@ import (
 	"pims/internal/latency"
 	"pims/internal/logging"
 	"pims/internal/pipeline"
+	"pims/internal/query"
 	"pims/internal/sim"
 )
 
@@ -234,6 +235,7 @@ type State struct {
 	Logs           []logging.Entry      `json:"logs"`
 	Latency        latency.Result       `json:"latency"`
 	Limits         map[string]float64   `json:"limits"`
+	Query          pipeline.QueryInfo   `json:"query"`
 }
 
 // GetState returns the current application state.
@@ -253,6 +255,7 @@ func (a *App) GetState() State {
 	st.Steps = a.pipe.StepStates()
 	st.Sim = a.pipe.SimStats()
 	st.Limits = map[string]float64{"minRate": sim.MinRate, "maxRate": sim.MaxRate, "defaultRate": pipeline.DefaultRate}
+	st.Query = a.pipe.QueryInfo()
 	return st
 }
 
@@ -328,6 +331,26 @@ func (a *App) SetRate(rate float64) error { return a.pipe.SetRate(rate) }
 
 // StopSimulation stops the simulator.
 func (a *App) StopSimulation() error { return a.pipe.StopSimulation() }
+
+// RunQuery runs sql, which may hold several statements, in the DuckDB
+// container and returns the last result set. The SQL itself is not logged:
+// it can be long and is the operator's own, though DuckDB's error message
+// may quote part of it.
+func (a *App) RunQuery(sql string) (query.Result, error) {
+	ctx, err := a.context()
+	if err != nil {
+		return query.Result{}, err
+	}
+	res, err := a.pipe.Query(ctx, sql)
+	if err != nil {
+		// Info, not Warn: a typo in a query is the operator's to fix, and the
+		// UI counts warnings against the setup.
+		a.log.Info("SQL query failed", "error", err)
+		return query.Result{}, err
+	}
+	a.log.Info("Ran SQL query", "rows", res.TotalRows, "elapsed_ms", res.ElapsedMs)
+	return res, nil
+}
 
 // ring is a fixed-capacity FIFO used for UI history.
 type ring[T any] struct {

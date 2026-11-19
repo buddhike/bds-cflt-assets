@@ -1,0 +1,123 @@
+import {useEffect, useRef} from 'react';
+import {Annotation, EditorState, Transaction} from '@codemirror/state';
+import {drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers, placeholder} from '@codemirror/view';
+import {defaultKeymap, history, historyKeymap} from '@codemirror/commands';
+import {bracketMatching, HighlightStyle, syntaxHighlighting} from '@codemirror/language';
+import {PostgreSQL, SQLDialect, sql} from '@codemirror/lang-sql';
+import {tags} from '@lezer/highlight';
+
+// DuckDB's SQL is close to PostgreSQL's. These are the words DuckDB adds
+// that the PostgreSQL dialect does not already highlight.
+const DuckDB = SQLDialect.define({
+  ...PostgreSQL.spec,
+  keywords: `${PostgreSQL.spec.keywords} summarize pivot unpivot qualify sample asof positional anti semi macro pragma install export use try_cast`,
+  types: `${PostgreSQL.spec.types} hugeint uhugeint ubigint uinteger usmallint utinyint tinyint blob list struct map union bit varint timetz timestamp_s timestamp_ms timestamp_ns`,
+});
+
+// Colours are CSS variables (see style.css), so the editor follows the
+// light and dark themes without being rebuilt.
+const theme = EditorView.theme({
+  '&': {
+    color: 'var(--text-primary)', backgroundColor: 'var(--surface-1)', fontSize: '13px',
+    border: '1px solid var(--border)', borderRadius: '8px', maxHeight: '360px',
+  },
+  '&.cm-focused': {outline: '2px solid var(--accent)', outlineOffset: '-1px'},
+  '.cm-scroller': {fontFamily: 'var(--font-mono)', lineHeight: '1.55', overflow: 'auto'},
+  '.cm-content': {caretColor: 'var(--text-primary)', padding: '8px 0', minHeight: '120px'},
+  '.cm-line': {padding: '0 12px'},
+  '.cm-cursor': {borderLeftColor: 'var(--text-primary)'},
+  '.cm-gutters': {backgroundColor: 'transparent', color: 'var(--text-muted)', border: 'none'},
+  '.cm-lineNumbers .cm-gutterElement': {padding: '0 4px 0 12px', minWidth: '28px'},
+  // Only the focused editor has a current line to point at.
+  '&.cm-focused .cm-activeLine': {backgroundColor: 'color-mix(in srgb, var(--accent) 6%, transparent)'},
+  '.cm-activeLine': {backgroundColor: 'transparent'},
+  '.cm-activeLineGutter': {backgroundColor: 'transparent', color: 'var(--text-secondary)'},
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
+    backgroundColor: 'color-mix(in srgb, var(--accent) 28%, transparent)',
+  },
+  '.cm-matchingBracket': {backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)', outline: 'none'},
+  '.cm-placeholder': {color: 'var(--text-muted)'},
+});
+
+const highlight = HighlightStyle.define([
+  {tag: tags.keyword, color: 'var(--syn-keyword)', fontWeight: '600'},
+  {tag: tags.typeName, color: 'var(--syn-type)'},
+  {tag: tags.standard(tags.name), color: 'var(--syn-builtin)'},
+  {tag: [tags.string, tags.special(tags.name)], color: 'var(--syn-string)'},
+  {tag: tags.special(tags.string), color: 'var(--syn-ident)'},
+  {tag: [tags.number, tags.bool, tags.null], color: 'var(--syn-number)'},
+  {tag: [tags.lineComment, tags.blockComment], color: 'var(--syn-comment)', fontStyle: 'italic'},
+  {tag: [tags.operator, tags.punctuation, tags.paren, tags.squareBracket, tags.brace], color: 'var(--text-secondary)'},
+]);
+
+// Marks edits the parent made, which it already knows about.
+const external = Annotation.define<boolean>();
+
+export interface SqlEditorProps {
+  value: string;
+  /** Called when the operator edits the text, not when `value` is replaced from outside. */
+  onChange: (text: string) => void;
+  /** Called with the selected text, or '' when nothing is selected, whenever either changes. */
+  onSelect: (selected: string) => void;
+  /** Called for Cmd/Ctrl+Enter. */
+  onRun: () => void;
+  placeholderText?: string;
+}
+
+/** SqlEditor is a CodeMirror editor with DuckDB SQL highlighting. */
+export function SqlEditor({value, onChange, onSelect, onRun, placeholderText}: SqlEditorProps) {
+  const host = useRef<HTMLDivElement>(null);
+  const view = useRef<EditorView | null>(null);
+  // The editor is built once, so it calls the latest callbacks through this.
+  const callbacks = useRef({onChange, onSelect, onRun});
+  useEffect(() => { callbacks.current = {onChange, onSelect, onRun}; });
+
+  useEffect(() => {
+    const v = new EditorView({
+      parent: host.current!,
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          lineNumbers(),
+          history(),
+          drawSelection(),
+          highlightActiveLine(),
+          bracketMatching(),
+          sql({dialect: DuckDB}),
+          syntaxHighlighting(highlight),
+          theme,
+          EditorView.contentAttributes.of({'aria-label': 'SQL query', spellcheck: 'false'}),
+          ...(placeholderText ? [placeholder(placeholderText)] : []),
+          keymap.of([
+            {key: 'Mod-Enter', preventDefault: true, run: () => { callbacks.current.onRun(); return true; }},
+            ...defaultKeymap,
+            ...historyKeymap,
+          ]),
+          EditorView.updateListener.of((u) => {
+            if (u.docChanged && !u.transactions.some((t) => t.annotation(external))) {
+              callbacks.current.onChange(u.state.doc.toString());
+            }
+            if (u.docChanged || u.selectionSet) {
+              const {from, to} = u.state.selection.main;
+              callbacks.current.onSelect(u.state.sliceDoc(from, to));
+            }
+          }),
+        ],
+      }),
+    });
+    view.current = v;
+    return () => { v.destroy(); view.current = null; };
+    // Built once; later `value`s arrive through the effect below.
+  }, []);
+
+  // Follow the parent when it replaces the text, for example with a new
+  // starter query. That is not an edit the operator could want to undo.
+  useEffect(() => {
+    const v = view.current;
+    if (v && v.state.doc.toString() !== value) {
+      v.dispatch({changes: {from: 0, to: v.state.doc.length, insert: value}, annotations: [external.of(true), Transaction.addToHistory.of(false)]});
+    }
+  }, [value]);
+
+  return <div ref={host} className="sql-editor"/>;
+}

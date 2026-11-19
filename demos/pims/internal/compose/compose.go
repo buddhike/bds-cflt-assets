@@ -217,27 +217,97 @@ func (p *Project) Down(ctx context.Context, removeVolumes bool) error {
 	return nil
 }
 
+// ErrOutputTooLarge is returned by ExecLimit when the command writes more to
+// stdout than the caller allowed.
+var ErrOutputTooLarge = errors.New("command output is too large")
+
+// ExecError is a command that failed inside a service. Its text names the
+// service and the exit status but not the command: callers may wrap the
+// program in another such as timeout, which would then read as the cause of
+// the failure.
+type ExecError struct {
+	Service string
+	// Err is how the command ended, for example an exit status.
+	Err error
+	// Stderr is what the command wrote to stderr, scrubbed of secrets and
+	// truncated.
+	Stderr string
+}
+
+func (e *ExecError) Error() string {
+	return fmt.Sprintf("exec in %s: %v: %s", e.Service, e.Err, e.Stderr)
+}
+
+func (e *ExecError) Unwrap() error { return e.Err }
+
 // Exec runs a command inside a running service with stdin attached and
 // returns its stdout. Secrets should be passed on stdin rather than as
 // arguments so they do not show up in process listings. Any value in
 // redact is scrubbed from the error, since tools such as DuckDB echo the
 // failing statement on stderr.
 func (p *Project) Exec(ctx context.Context, service string, stdin io.Reader, redact []string, cmd ...string) ([]byte, error) {
+	return p.ExecLimit(ctx, service, stdin, redact, 0, cmd...)
+}
+
+// ExecLimit is Exec for commands whose output size is not known up front,
+// such as a query. It fails with ErrOutputTooLarge once the command has
+// written more than maxStdout bytes (0 means no limit) instead of buffering
+// it all. Stopping the docker client does not stop the command inside the
+// container, so callers should bound it there too.
+func (p *Project) ExecLimit(ctx context.Context, service string, stdin io.Reader, redact []string, maxStdout int, cmd ...string) ([]byte, error) {
 	if len(cmd) == 0 {
 		return nil, errors.New("exec: no command given")
 	}
-	var stdout, stderr bytes.Buffer
+	stdout := &cappedBuffer{max: maxStdout}
+	stderr := &prefixBuffer{max: maxStderr}
 	args := append([]string{"exec", "-T", service}, cmd...)
 	c := p.command(ctx, nil, args...)
 	c.Stdin = stdin
-	c.Stdout = &stdout
-	c.Stderr = &stderr
+	c.Stdout = stdout
+	c.Stderr = stderr
 	if err := c.Run(); err != nil {
-		// The command is not named: callers may wrap the program in another
-		// such as timeout, which would then read as the cause of the failure.
-		return stdout.Bytes(), fmt.Errorf("exec in %s: %w: %s", service, err, scrub(stderr.String(), redact))
+		if stdout.exceeded {
+			return nil, fmt.Errorf("exec in %s: %w", service, ErrOutputTooLarge)
+		}
+		return stdout.buf.Bytes(), &ExecError{Service: service, Err: err, Stderr: scrub(stderr.String(), redact)}
 	}
-	return stdout.Bytes(), nil
+	return stdout.buf.Bytes(), nil
+}
+
+// maxStderr is how much of a command's stderr is kept. Only the start of it
+// reaches an error, and a command such as DuckDB can write far more.
+const maxStderr = 64 << 10
+
+// prefixBuffer keeps the first max bytes written and drops the rest without
+// failing, so a chatty command is neither stopped nor buffered whole.
+type prefixBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (b *prefixBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (b *prefixBuffer) String() string { return b.buf.String() }
+
+// cappedBuffer collects up to max bytes (0 means unlimited). Its Write fails
+// past that, which closes the pipe to the docker client so it stops.
+type cappedBuffer struct {
+	buf      bytes.Buffer
+	max      int
+	exceeded bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.max > 0 && b.buf.Len()+len(p) > b.max {
+		b.exceeded = true
+		return 0, ErrOutputTooLarge
+	}
+	return b.buf.Write(p)
 }
 
 // run executes a compose subcommand, streaming its output to the log.

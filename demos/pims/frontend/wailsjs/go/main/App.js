@@ -10,6 +10,10 @@ export function GetState() {
   return window['go']['main']['App']['GetState']();
 }
 
+export function RunQuery(arg1) {
+  return window['go']['main']['App']['RunQuery'](arg1);
+}
+
 export function SetCredentials(arg1) {
   return window['go']['main']['App']['SetCredentials'](arg1);
 }

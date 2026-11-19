@@ -80,5 +80,12 @@ Once the components are setup, simulate patient registrations, visits and appoin
     - `io.confluent.tableflow/processing_freshness_latency_milliseconds`: Tableflow's processing time, from picking a record up to writing it.
 - Poll once a minute for the last 5 hours (the most the API allows at one-minute granularity), and show the latest value and a line graph for each metric.
 - Say that the metrics are in Preview, that Tableflow only updates them when it commits, and that data reaches the API a few minutes late.
-- PIMS does not derive latency from the data. The DuckDB container stays in the stack for a later feature, but the freshness charts do not use it.
+- PIMS does not derive latency from the data. The freshness charts do not use the DuckDB container.
+
+### SQL query window
+- Show a SQL editor with syntax highlighting where the operator can write a DuckDB query.
+- Run it in the DuckDB container, with the Tableflow Iceberg REST catalog attached as `tableflow` once Tableflow is enabled, and show the result as a table with its row count and how long it took.
+- Run only the selected text when there is a selection. Run with Cmd/Ctrl+Enter.
+- Bound a run: cap the rows shown and the output read, and stop the query in the container after a timeout.
+- Accept only SQL, not the DuckDB shell's own commands.
 

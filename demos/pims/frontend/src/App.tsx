@@ -5,6 +5,7 @@ import {DataFlow} from './components/DataFlow';
 import {SetupSteps} from './components/SetupSteps';
 import {SimulationPanel} from './components/SimulationPanel';
 import {LatencyChart} from './components/LatencyChart';
+import {QueryPanel} from './components/QueryPanel';
 import {ActivityLog} from './components/ActivityLog';
 import {Logo} from './components/Logo';
 import {events} from './api';
@@ -57,6 +58,8 @@ export default function App() {
   const busy = state.busy;
   const stepsStarted = state.steps.some((s) => s.status !== 'pending');
   const schemaReady = state.steps.find((s) => s.id === 'schema')?.status === 'done' || state.sim.running || state.sim.events > 0;
+  // Queries run in the DuckDB container, which setup starts, and the teardown deletes.
+  const queryReady = state.steps.find((s) => s.id === 'services')?.status === 'done' && busy !== 'teardown';
   const errorCount = logs.filter((l) => l.level.toUpperCase() === 'ERROR').length;
   const warnCount = logs.filter((l) => l.level.toUpperCase() === 'WARN').length;
 
@@ -106,6 +109,7 @@ export default function App() {
         </section>
         <SimulationPanel sim={state.sim} limits={state.limits} ready={schemaReady}/>
         <LatencyChart latency={latency}/>
+        <QueryPanel info={state.query ?? {}} ready={queryReady}/>
         <ActivityLog id={ACTIVITY_ID} logs={logs}/>
       </div>
     </div>

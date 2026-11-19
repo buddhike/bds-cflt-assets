@@ -164,6 +164,7 @@ export namespace main {
 	    logs: logging.Entry[];
 	    latency: latency.Result;
 	    limits: Record<string, number>;
+	    query: pipeline.QueryInfo;
 	
 	    static createFrom(source: any = {}) {
 	        return new State(source);
@@ -180,6 +181,7 @@ export namespace main {
 	        this.logs = this.convertValues(source["logs"], logging.Entry);
 	        this.latency = this.convertValues(source["latency"], latency.Result);
 	        this.limits = source["limits"];
+	        this.query = this.convertValues(source["query"], pipeline.QueryInfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -205,6 +207,22 @@ export namespace main {
 
 export namespace pipeline {
 	
+	export class QueryInfo {
+	    catalog?: string;
+	    namespace?: string;
+	    tables?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.catalog = source["catalog"];
+	        this.namespace = source["namespace"];
+	        this.tables = source["tables"];
+	    }
+	}
 	export class StepState {
 	    id: string;
 	    title: string;
@@ -246,6 +264,29 @@ export namespace pipeline {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace query {
+	
+	export class Result {
+	    columns: string[];
+	    rows: string[][];
+	    totalRows: number;
+	    elapsedMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Result(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = source["columns"];
+	        this.rows = source["rows"];
+	        this.totalRows = source["totalRows"];
+	        this.elapsedMs = source["elapsedMs"];
+	    }
 	}
 
 }

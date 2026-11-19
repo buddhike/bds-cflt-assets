@@ -58,6 +58,25 @@ export interface LatencyResult {
   error?: string;
 }
 
+/** What the query window can reach: the Tableflow tables, once Tableflow is enabled. */
+export interface QueryInfo {
+  /** The DuckDB catalog the tables are attached as. */
+  catalog?: string;
+  /** The schema in `catalog` that holds the tables: the Kafka cluster id. */
+  namespace?: string;
+  tables?: string[];
+}
+
+/** The last result set of a query. Cells are DuckDB's own text, or null for NULL. */
+export interface QueryResult {
+  columns: string[];
+  /** At most the first 1000 rows. */
+  rows: (string | null)[][];
+  /** How many rows the statement returned. */
+  totalRows: number;
+  elapsedMs: number;
+}
+
 export interface AppState {
   hasCredentials: boolean;
   awsRegion: string;
@@ -68,6 +87,7 @@ export interface AppState {
   logs: LogEntry[] | null;
   latency: LatencyResult;
   limits: {minRate: number; maxRate: number; defaultRate: number};
+  query: QueryInfo;
 }
 
 export interface Credentials {
@@ -85,6 +105,7 @@ export const api = {
   startSimulation: (rate: number) => App.StartSimulation(rate),
   setRate: (rate: number) => App.SetRate(rate),
   stopSimulation: () => App.StopSimulation(),
+  runQuery: (sql: string) => App.RunQuery(sql) as unknown as Promise<QueryResult>,
 };
 
 export const events = {

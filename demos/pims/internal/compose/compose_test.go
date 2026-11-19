@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pims/internal/config"
 )
@@ -144,5 +145,94 @@ func TestExecErrorDoesNotNameTheCommand(t *testing.T) {
 func TestExecRequiresCommand(t *testing.T) {
 	if _, err := newTestProject(t).Exec(context.Background(), ServiceDuckDB, nil, nil); err == nil {
 		t.Fatal("Exec without a command must fail")
+	}
+}
+
+// fakeDocker writes an executable that stands in for the docker CLI.
+func fakeDocker(t *testing.T, script string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "docker")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestExecErrorCarriesScrubbedStderrAndKeepsStdout(t *testing.T) {
+	p := newTestProject(t)
+	p.docker = fakeDocker(t, `echo partial; echo "Parser Error near hunter2" >&2; exit 3`)
+	out, err := p.Exec(context.Background(), ServiceDuckDB, nil, []string{"hunter2"}, "duckdb")
+	var ee *ExecError
+	if !errors.As(err, &ee) {
+		t.Fatalf("Exec() = %v, want an *ExecError", err)
+	}
+	if ee.Service != ServiceDuckDB || ee.Stderr != "Parser Error near [REDACTED]" {
+		t.Fatalf("ExecError = %+v", ee)
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 {
+		t.Fatalf("Exec() = %v, want the exit status to be reachable", err)
+	}
+	if string(out) != "partial\n" {
+		t.Fatalf("stdout = %q, want what was written before the failure", out)
+	}
+	if want := "exec in duckdb: exit status 3: Parser Error near [REDACTED]"; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
+// The docker CLI is replaced by yes(1), which prints its arguments forever.
+func TestExecLimitStopsOutputThatKeepsComing(t *testing.T) {
+	p := newTestProject(t)
+	p.docker = "yes"
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	out, err := p.ExecLimit(ctx, ServiceDuckDB, nil, nil, 4096, "duckdb")
+	if !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("ExecLimit() = %v, want ErrOutputTooLarge", err)
+	}
+	if out != nil {
+		t.Fatalf("ExecLimit() returned %d bytes with the error, want none", len(out))
+	}
+	if ctx.Err() != nil {
+		t.Fatal("ExecLimit must stop the command itself, not wait for the deadline")
+	}
+}
+
+func TestExecLimitReturnsOutputWithinTheLimit(t *testing.T) {
+	p := newTestProject(t)
+	p.docker = fakeDocker(t, `printf '0123456789'`)
+	out, err := p.ExecLimit(context.Background(), ServiceDuckDB, nil, nil, 10, "duckdb")
+	if err != nil || string(out) != "0123456789" {
+		t.Fatalf("ExecLimit() = %q, %v, want output of exactly the limit", out, err)
+	}
+	if _, err := p.ExecLimit(context.Background(), ServiceDuckDB, nil, nil, 9, "duckdb"); !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("ExecLimit() = %v, want ErrOutputTooLarge one byte over", err)
+	}
+	// Zero means unlimited, which is what Exec uses.
+	if out, err := p.Exec(context.Background(), ServiceDuckDB, nil, nil, "duckdb"); err != nil || len(out) != 10 {
+		t.Fatalf("Exec() = %q, %v", out, err)
+	}
+}
+
+// A command that writes a flood to stderr is neither stopped nor buffered
+// whole, and the error still starts with the beginning of what it said.
+func TestExecKeepsOnlyTheStartOfStderr(t *testing.T) {
+	p := newTestProject(t)
+	p.docker = fakeDocker(t, `echo "Binder Error: first line" >&2; head -c 3000000 /dev/zero | tr '\0' 'x' >&2; exit 1`)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err := p.Exec(ctx, ServiceDuckDB, nil, nil, "duckdb")
+	var ee *ExecError
+	if !errors.As(err, &ee) {
+		t.Fatalf("Exec() = %v, want an *ExecError", err)
+	}
+	if !strings.HasPrefix(ee.Stderr, "Binder Error: first line") || len(ee.Stderr) > 510 {
+		t.Fatalf("Stderr = %d bytes starting %.40q, want the start of the output, truncated", len(ee.Stderr), ee.Stderr)
+	}
+	var b prefixBuffer
+	b.max = 5
+	if n, err := b.Write([]byte("0123456789")); n != 10 || err != nil || b.String() != "01234" {
+		t.Fatalf("prefixBuffer kept %q after Write = %d, %v", b.String(), n, err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"pims/internal/compose"
 	"pims/internal/config"
 	"pims/internal/latency"
+	"pims/internal/query"
 	"pims/internal/sim"
 	"pims/internal/terraform"
 )
@@ -73,7 +74,7 @@ func fakeDeps(r *recorder) Deps {
 			} else {
 				r.add("provision")
 			}
-			return terraform.Outputs{EnvironmentID: "env-1", KafkaClusterID: "lkc-1", Topics: []string{"patients"}}, nil
+			return terraform.Outputs{EnvironmentID: "env-1", KafkaClusterID: "lkc-1", Topics: []string{"patients"}, TableflowEnabled: o.EnableTableflow}, nil
 		},
 		Destroy: func(context.Context, config.Credentials) error { r.add("destroy"); return nil },
 		StartLocal: func(context.Context, terraform.Outputs) (compose.MySQLSecrets, error) {
@@ -101,6 +102,10 @@ func fakeDeps(r *recorder) Deps {
 			}
 			r.add("monitor")
 			return fakeQuerier{}, nil
+		},
+		RunQuery: func(_ context.Context, o terraform.Outputs, sql string) (query.Result, error) {
+			r.add(fmt.Sprintf("query tableflow=%t %s", o.TableflowEnabled, sql))
+			return query.Result{Columns: []string{"a"}, TotalRows: 1}, nil
 		},
 		PollInterval: time.Hour,
 		Seed:         1,
@@ -284,5 +289,180 @@ func TestSetupReusesOperatorRate(t *testing.T) {
 	}
 	if got := p.SimStats().Rate; got != 25 {
 		t.Fatalf("rate after re-running setup = %v, want 25", got)
+	}
+}
+
+func TestQueryNeedsSetup(t *testing.T) {
+	r := &recorder{}
+	p := New(fakeDeps(r), slog.New(slog.DiscardHandler), nil, nil)
+	if _, err := p.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("Query() = %v, want ErrNotReady", err)
+	}
+	if got := p.QueryInfo(); got.Catalog != "" || len(got.Tables) != 0 {
+		t.Fatalf("QueryInfo() = %+v before setup, want none", got)
+	}
+	if len(r.list()) != 0 {
+		t.Fatalf("calls = %v, want none", r.list())
+	}
+}
+
+func TestQueryRunsWithTheOutputsOfSetup(t *testing.T) {
+	r := &recorder{}
+	p := New(fakeDeps(r), slog.New(slog.DiscardHandler), nil, nil)
+	defer p.Close()
+	if err := p.Setup(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	res, err := p.Query(context.Background(), "SELECT 1")
+	if err != nil || res.TotalRows != 1 {
+		t.Fatalf("Query() = %+v, %v", res, err)
+	}
+	if got := r.list(); got[len(got)-1] != "query tableflow=true SELECT 1" {
+		t.Fatalf("calls = %v, want the query to see Tableflow enabled", got)
+	}
+	want := QueryInfo{Catalog: "tableflow", Namespace: "lkc-1", Tables: []string{"patients"}}
+	if got := p.QueryInfo(); got.Catalog != want.Catalog || got.Namespace != want.Namespace || !slices.Equal(got.Tables, want.Tables) {
+		t.Fatalf("QueryInfo() = %+v, want %+v", got, want)
+	}
+}
+
+// A setup that fails after Tableflow is enabled leaves its tables there to
+// query.
+func TestQuerySeesTableflowAfterALaterStepFails(t *testing.T) {
+	r := &recorder{}
+	deps := fakeDeps(r)
+	deps.NewQuerier = func(config.Credentials, terraform.Outputs) (latency.Querier, error) {
+		return nil, errors.New("metrics api unreachable")
+	}
+	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
+	defer p.Close()
+	if err := p.Setup(context.Background(), creds); err == nil {
+		t.Fatal("Setup() = nil, want the monitor failure")
+	}
+	if _, err := p.Query(context.Background(), "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.list(); got[len(got)-1] != "query tableflow=true SELECT 1" {
+		t.Fatalf("calls = %v, want the query to see Tableflow enabled", got)
+	}
+	if p.QueryInfo().Catalog == "" {
+		t.Fatal("QueryInfo() must offer the catalog once Tableflow is enabled")
+	}
+}
+
+// Before Tableflow is enabled there are no tables, but plain DuckDB works.
+func TestQueryBeforeTableflowIsPlainDuckDB(t *testing.T) {
+	r := &recorder{}
+	deps := fakeDeps(r)
+	deps.WaitSchemas = func(context.Context, terraform.Outputs) error { return errors.New("no schemas yet") }
+	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
+	defer p.Close()
+	if err := p.Setup(context.Background(), creds); err == nil {
+		t.Fatal("Setup() = nil, want the schema wait to fail")
+	}
+	if _, err := p.Query(context.Background(), "SELECT 1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.list(); got[len(got)-1] != "query tableflow=false SELECT 1" {
+		t.Fatalf("calls = %v, want a query without Tableflow", got)
+	}
+	if got := p.QueryInfo(); got.Catalog != "" || len(got.Tables) != 0 {
+		t.Fatalf("QueryInfo() = %+v, want none", got)
+	}
+}
+
+func TestQueryStopsWithTheDemo(t *testing.T) {
+	r := &recorder{}
+	p := New(fakeDeps(r), slog.New(slog.DiscardHandler), nil, nil)
+	if err := p.Setup(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Teardown(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("Query() after teardown = %v, want ErrNotReady", err)
+	}
+	if p.QueryInfo().Catalog != "" {
+		t.Fatal("QueryInfo() must be empty after teardown")
+	}
+
+	if err := p.Setup(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+	if _, err := p.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Query() after close = %v, want ErrClosed", err)
+	}
+}
+
+// Terraform's outputs are known long before the DuckDB container is up, and
+// a re-run of setup stops the old container's step from counting.
+func TestQueryWaitsForTheDuckDBContainer(t *testing.T) {
+	r := &recorder{}
+	deps := fakeDeps(r)
+	release := make(chan struct{})
+	deps.StartLocal = func(context.Context, terraform.Outputs) (compose.MySQLSecrets, error) {
+		<-release
+		return compose.MySQLSecrets{Generation: "g1"}, nil
+	}
+	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
+	defer p.Close()
+	done := make(chan error, 1)
+	go func() { done <- p.Setup(context.Background(), creds) }()
+	for { // wait until setup is in the step that starts the containers
+		p.mu.Lock()
+		running := p.steps[StepServices].Status == StatusRunning
+		known := p.outputs != nil
+		p.mu.Unlock()
+		if running && known {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := p.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("Query() while the containers start = %v, want ErrNotReady", err)
+	}
+	if got := p.QueryInfo(); got.Catalog != "" {
+		t.Fatalf("QueryInfo() = %+v while the containers start, want none", got)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Query(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("Query() after setup = %v", err)
+	}
+}
+
+func TestQueryRunsOneAtATime(t *testing.T) {
+	r := &recorder{}
+	deps := fakeDeps(r)
+	started, release := make(chan struct{}), make(chan struct{})
+	deps.RunQuery = func(context.Context, terraform.Outputs, string) (query.Result, error) {
+		close(started)
+		<-release
+		return query.Result{}, nil
+	}
+	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
+	defer p.Close()
+	if err := p.Setup(context.Background(), creds); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := p.Query(context.Background(), "SELECT 1"); done <- err }()
+	<-started
+	if _, err := p.Query(context.Background(), "SELECT 2"); !errors.Is(err, ErrQueryBusy) {
+		t.Fatalf("second Query() = %v, want ErrQueryBusy", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// The guard is released once the first query ends.
+	deps.RunQuery = func(context.Context, terraform.Outputs, string) (query.Result, error) { return query.Result{}, nil }
+	p.deps = deps
+	if _, err := p.Query(context.Background(), "SELECT 3"); err != nil {
+		t.Fatalf("Query() after the first ended = %v", err)
 	}
 }

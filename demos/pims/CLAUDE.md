@@ -36,13 +36,14 @@ Data path: `MySQL → Debezium (Kafka Connect, local) → CC Kafka topics (Avro 
 
 Freshness path: `Tableflow → CC Metrics API → PIMS`. PIMS polls `io.confluent.tableflow/event_freshness_latency_milliseconds` and `…/processing_freshness_latency_milliseconds` once a minute and charts them. It does not compute latency itself.
 
-A DuckDB container also runs next to MySQL and Connect. **Nothing reads it yet and it is kept on purpose** for an upcoming feature, so don't remove the `duckdb` compose service, its image, or the Terraform `tableflow_api_key`/`tableflow_catalog_endpoint` outputs it will need.
+A DuckDB container also runs next to MySQL and Connect. The SQL window (`internal/query`) runs the operator's own queries in it and attaches the Tableflow Iceberg REST catalog as `tableflow`, using the `tableflow_api_key`/`tableflow_catalog_endpoint` Terraform outputs, so keep the `duckdb` compose service, its image and those outputs. The freshness charts don't use it.
 
 - `main.go` / `app.go`: Wails entrypoint. `App` methods are bound to the frontend; progress reaches the UI as events (`log`, `step`, `latency`, `sim`, `setup:done`, `teardown:done`). CC credentials are held in memory only.
 - `internal/pipeline`: orchestrates the ordered setup steps and teardown, and owns the simulator and latency monitor. Dependencies are injected as `Deps` functions (`wire.go` holds the real ones) so ordering is unit-tested with fakes.
 - `internal/terraform`: embedded `tf/*.tf` plus `.terraform.lock.hcl`, run via `terraform-exec`. The binary comes from `hc-install`.
 - `internal/compose`: embedded compose project (MySQL 8.4, cp-kafka-connect + Debezium MySQL plugin, DuckDB CLI), rendered into the workspace and driven by the `docker compose` CLI.
 - `internal/schema`, `internal/connector`, `internal/sim`, `internal/latency`: MySQL schema, Connect and Schema Registry clients, clinic simulator, Metrics API client and monitor for Tableflow's freshness metrics.
+- `internal/query`: the SQL window's backend. Each run is one DuckDB CLI session in the container, fed on stdin: session setup in `.mode trash`, then `.print` of a ready marker (so a setup failure is told from a query failure), then the operator's SQL in `.mode json`. `App.RunQuery` → `Pipeline.Query` → `Deps.RunQuery`; it needs the Terraform outputs of a setup run in this session. The UI is `frontend/src/components/QueryPanel.tsx` with a CodeMirror editor in `SqlEditor.tsx`.
 - `internal/config`, `internal/logging`, `internal/retry`: shared foundations. Use `retry.Do` with `retry.Permanent` for non-retryable errors, and log only through slog with sentence-case messages.
 
 ## Invariants to preserve
@@ -55,9 +56,10 @@ A DuckDB container also runs next to MySQL and Connect. **Nothing reads it yet a
 - **Secrets**:
   - CC credentials go to terraform only via process env.
   - Connector configs use `${env:…}` (Connect env config provider).
-  - `compose.Exec` takes scripts on stdin (the DuckDB container) and scrubs stderr.
+  - `compose.Exec` takes scripts on stdin (the DuckDB container) and scrubs stderr. `ExecLimit` also caps stdout, and `*ExecError` carries the scrubbed stderr.
   - The Metrics API is called with the operator's Cloud API key, passed from `Setup` to the monitor in memory and never logged. The demo's service account has no Metrics API access, on purpose: `MetricsViewer` is organisation-scoped and would widen it beyond the demo environment.
   - Credential types redact themselves in `String`/`LogValue`/`MarshalJSON`.
+- **Query window**: the operator's SQL shares stdin with the setup script, so a line starting with `.` (a DuckDB shell command, such as `.mode` or `.shell`) is rejected before it reaches DuckDB: it would change the output format `internal/query` parses or run programs. DuckDB runs as `bash -c 'set -o pipefail; timeout --signal=KILL … duckdb -batch -bail | head -c N'`. The host can't stop it (stopping the docker client leaves the process running in the container), so the container ends it at the time limit and, through `head`, as soon as it prints past the 8 MiB cap; only 1000 rows are returned. The session sets `memory_limit` and a spill directory the container's user can write. The catalog session sets `httpfs_connection_caching` (off by default, so every request pays a new TCP and TLS handshake: measured 511 s versus 187 s for one scan on a 320 ms link), and the run limit is 5 minutes because that scan takes minutes. One query runs at a time (`ErrQueryBusy`), and queries are refused until setup's services step is done, since Terraform's outputs are known before the container is up. The Tableflow secret is in the session by design, so the SQL is trusted input from the operator. Cells are returned as DuckDB's own text (HUGEINT and BIGINT would lose digits as JavaScript numbers).
 - **Timestamps**: `created_at`/`updated_at` are `DATETIME(3)` maintained by MySQL in UTC. Freshness no longer uses them (Tableflow's metrics do), but keep them. Business times (`scheduled_at`, `check_in_at`) come from the simulator's clinic clock.
 - **Simulator domain rules are enforced in `internal/sim/model.go`** before writing: one appointment per patient per day, no overlapping provider bookings, visits only for due appointments, one visit per patient at a time. Unique keys in `schema.sql` are only a backstop. The model is mutated only on the run goroutine, under `Simulator.mu`.
 
