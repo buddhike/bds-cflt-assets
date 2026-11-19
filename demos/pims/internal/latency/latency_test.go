@@ -144,10 +144,10 @@ func TestQueryAsksForEachMetricByTopic(t *testing.T) {
 		if b.Granularity != "PT1M" {
 			t.Errorf("granularity = %q", b.Granularity)
 		}
-		// The window is six hours, the most the API allows at PT1M, and ends
+		// The window is five hours, the most the API allows at PT1M, and ends
 		// at the start of the current minute, whose value is still being
 		// collected.
-		if want := []string{"2026-11-19T04:07:00Z/2026-11-19T10:07:00Z"}; len(b.Intervals) != 1 || b.Intervals[0] != want[0] {
+		if want := []string{"2026-11-19T05:07:00Z/2026-11-19T10:07:00Z"}; len(b.Intervals) != 1 || b.Intervals[0] != want[0] {
 			t.Errorf("intervals = %v, want %v", b.Intervals, want)
 		}
 		if b.Limit != maxGroups {
@@ -493,8 +493,8 @@ func TestQueryReportsRowsWithoutATopicLabel(t *testing.T) {
 }
 
 func TestWindowIsWithinWhatThePT1MGranularityAllows(t *testing.T) {
-	// The Metrics API allows at most six hours at one-minute granularity.
-	if Window > 6*time.Hour || Window%time.Minute != 0 {
+	// The Metrics API allows at most five hours at one-minute granularity.
+	if Window > 5*time.Hour || Window%time.Minute != 0 {
 		t.Fatalf("Window = %v", Window)
 	}
 }
