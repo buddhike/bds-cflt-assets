@@ -1,0 +1,94 @@
+# Builds the container images of the PIMS Launchpad demo and publishes them to
+# the GitHub Container Registry:
+#
+#   ghcr.io/<owner>/pims-server   the simulator, web UI and API in one Go binary
+#   ghcr.io/<owner>/pims-duckdb   DuckDB with the agent that runs the UI's queries
+#   ghcr.io/<owner>/pims-connect  Kafka Connect with the Debezium MySQL plugin
+#
+# Tags: the commit SHA on every push, the branch name, and `latest` on the
+# default branch. The Terraform in demos/pims/tf takes the registry and the tag
+# as variables.
+#
+# GitHub creates a package as private. Make each one public once (the package's
+# settings, Change visibility), or give Terraform the credentials of a registry
+# secret. Fargate cannot pull a private GHCR image otherwise.
+name: PIMS images
+
+on:
+  push:
+    branches: [main, launchpad]
+    paths:
+      - 'demos/pims/**'
+      - '.github/workflows/pims-images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pims-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write # push to GHCR with the workflow's own token
+    strategy:
+      # One image failing must not hide whether the others build.
+      fail-fast: false
+      matrix:
+        include:
+          - image: pims-server
+            context: demos/pims
+            file: demos/pims/docker/Dockerfile
+            target: server
+          - image: pims-duckdb
+            context: demos/pims
+            file: demos/pims/docker/Dockerfile
+            target: duckdb
+          - image: pims-connect
+            context: demos/pims/internal/compose/project/connect
+            file: demos/pims/internal/compose/project/connect/Dockerfile
+            target: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          # The action lowercases the image name, which GHCR requires.
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.description=PIMS, a Launchpad demo of Debezium CDC into Confluent Cloud Tableflow
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          # Fargate in the Terraform runs on x86_64.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Provenance and an SBOM make the registry show the build's origin.
+          provenance: mode=max
+          sbom: true
