@@ -9,11 +9,8 @@ export interface Credentials {
 
 export interface User {
   email: string;
-  status: 'pending' | 'approved' | 'denied';
-  role: 'admin' | 'user';
+  role: 'admin';
   createdAt: number;
-  decidedBy?: string | null;
-  decidedAt?: number | null;
   credentials?: Credentials;
 }
 
@@ -72,9 +69,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 export const api = {
   me: () => call<User>('GET', '/me'),
-  start: (email: string) => call<{sent: boolean}>('POST', '/auth/start', {email}),
-  verify: (email: string, otp: string) =>
-    call<{status: User['status']; user: User}>('POST', '/auth/verify', {email, otp}),
+  /** Text a code to the owner's phone. `resend` asks for a new one while another is still good. */
+  start: (resend: boolean) => call<{sent: boolean}>('POST', '/auth/start', {resend}),
+  verify: (otp: string) => call<{user: User}>('POST', '/auth/verify', {otp}),
   logout: () => call<{ok: boolean}>('POST', '/auth/logout'),
   demos: () => call<{demos: Demo[]}>('GET', '/demos'),
   demo: (id: string) => call<Demo>('GET', `/demos/${encodeURIComponent(id)}`),
@@ -85,10 +82,6 @@ export const api = {
   saveCredentials: (apiKey: string, apiSecret: string) =>
     call<Credentials>('PUT', '/credentials', {apiKey, apiSecret}),
   deleteCredentials: () => call<Credentials>('DELETE', '/credentials'),
-  requests: () => call<{requests: User[]}>('GET', '/admin/requests'),
-  users: () => call<{users: User[]}>('GET', '/admin/users'),
-  decide: (email: string, approve: boolean) =>
-    call<User>('POST', `/admin/users/${encodeURIComponent(email)}/${approve ? 'approve' : 'deny'}`),
 };
 
 export function errorText(err: unknown): string {

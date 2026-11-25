@@ -1,12 +1,11 @@
 import {useCallback, useEffect, useState} from 'react';
 import {api, ApiError, User} from './api';
-import {AccessRequests} from './components/AccessRequests';
 import {CredentialsPage} from './components/CredentialsPage';
 import {Demos} from './components/Demos';
 import {SignIn} from './components/SignIn';
 
-type View = 'demos' | 'credentials' | 'access';
-const VIEWS: View[] = ['demos', 'credentials', 'access'];
+type View = 'demos' | 'credentials';
+const VIEWS: View[] = ['demos', 'credentials'];
 
 // The address bar holds the view in the hash, so the page has no routes for the host to know about.
 const fromHash = (): View => {
@@ -19,6 +18,8 @@ export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [view, setView] = useState<View>(fromHash);
   const [loadError, setLoadError] = useState('');
+  // After signing out, wait for a click before sending another code to the phone.
+  const [signedOut, setSignedOut] = useState(false);
 
   const loadUser = useCallback(async () => {
     try {
@@ -41,11 +42,18 @@ export default function App() {
 
   if (loadError) return <main className="gate"><p className="error" role="alert">{loadError}</p><button onClick={loadUser}>Retry</button></main>;
   if (user === undefined) return <main className="gate"><p className="muted">Loading…</p></main>;
+  if (user === null && signedOut) {
+    return (
+      <main className="gate">
+        <h1>Signed out</h1>
+        <button className="primary" onClick={() => setSignedOut(false)}>Sign in</button>
+      </main>
+    );
+  }
   if (user === null) return <SignIn onSignedIn={loadUser} />;
 
-  const current = view === 'access' && user.role !== 'admin' ? 'demos' : view;
+  const current = view;
   const tabs: [View, string][] = [['demos', 'Demos'], ['credentials', 'Confluent Cloud key']];
-  if (user.role === 'admin') tabs.push(['access', 'Access requests']);
 
   return (
     <div className="app">
@@ -60,13 +68,12 @@ export default function App() {
         </nav>
         <span className="who">
           {user.email}
-          <button className="link" onClick={async () => { await api.logout().catch(() => undefined); setUser(null); }}>Sign out</button>
+          <button className="link" onClick={async () => { await api.logout().catch(() => undefined); setSignedOut(true); setUser(null); }}>Sign out</button>
         </span>
       </header>
       <main className="page">
         {current === 'demos' && <Demos user={user} onNeedCredentials={() => go('credentials')} />}
         {current === 'credentials' && <CredentialsPage current={user.credentials} onChanged={loadUser} />}
-        {current === 'access' && <AccessRequests />}
       </main>
     </div>
   );
