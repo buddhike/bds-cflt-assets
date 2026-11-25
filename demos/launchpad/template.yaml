@@ -314,6 +314,9 @@ Resources:
 
   ApiStage:
     Type: AWS::ApiGatewayV2::Stage
+    # RouteSettings names a route by its key, and the route must exist by then.
+    # Nothing in the stage refers to the routes, so say it explicitly.
+    DependsOn: [DefaultRoute, SignInRoute]
     Properties:
       ApiId: !Ref HttpApi
       StageName: $default
