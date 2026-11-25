@@ -88,7 +88,7 @@ nav { display: flex; gap: .25rem; flex-wrap: wrap; flex: 1; }
 .tab.active { border-color: var(--border); background: var(--bg); font-weight: 600; }
 .who { display: flex; gap: .75rem; align-items: center; color: var(--muted); }
 .page { max-width: 64rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
-.section-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1rem; }
 
 .cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr)); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; }
