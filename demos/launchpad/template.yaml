@@ -537,7 +537,8 @@ Resources:
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoTeardownFailed\"', 'Sum', 300)","label":"teardown failed","id":"e5"}]
             ]}},
             {"type":"metric","x":12,"y":2,"width":12,"height":6,"properties":{"title":"Sign-ins","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
-              ["Launchpad","SignInStarted"],["Launchpad","SignInSucceeded"],["Launchpad","SignInFailed"],["Launchpad","CredentialsSaved"]
+              ["Launchpad","SignInStarted"],["Launchpad","SignInSucceeded"],["Launchpad","SignInFailed"],["Launchpad","CredentialsSaved"],
+              [{"expression":"SEARCH('{Launchpad,reason} MetricName=\"SignInNotSent\"', 'Sum', 300)","label":"not sent","id":"e6"}]
             ]}},
             {"type":"metric","x":0,"y":8,"width":12,"height":6,"properties":{"title":"Terraform run time (seconds)","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
               [{"expression":"SEARCH('{Launchpad,action} MetricName=\"TerraformSeconds\"', 'Maximum', 300)","label":"longest","id":"e7"}]

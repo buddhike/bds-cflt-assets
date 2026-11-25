@@ -11,7 +11,7 @@ segments of the build follow.
 | Where demos live | `DemosPath` stack parameter, default `demos`. A demo is a direct sub directory that has a `tf/` directory. | PIMS lives in `demos/pims`. Set `DemosPath=launchpad-demos` to follow the overview literally. |
 | One instance per demo | A demo has one deployment. | Terraform state is per demo, not per user. |
 | Who signs in | One person, the owner (`SuperUserEmail`). The overview's registration and review list are not built. | The code goes to one phone number, so only its holder can sign in. |
-| Sign in | A one-time code texted through SNS to the number in a Secrets Manager secret. No address is typed. | SES mail from a `confluent.io` address was dropped by the recipient's DMARC policy, `p=reject`. The overview's emailed OTP and `@confluent.io` registration are superseded. |
+| Sign in | The owner types their phone number. If it matches the number in a Secrets Manager secret, a one-time code is texted to it through SNS. The page is always told that a code was sent. | SES mail from a `confluent.io` address was dropped by the recipient's DMARC policy, `p=reject`. The overview's emailed OTP and `@confluent.io` registration are superseded. |
 | Credentials store | KMS encrypted blob in DynamoDB. | The overview says DynamoDB for storage. KMS keeps the secret off the page and out of backups in plain text. |
 | Terraform compute | Lambda, container-less. The binary is downloaded to `/tmp`, checksum pinned. A run that hits the Lambda time limit is interrupted and resumed by a new invocation. | The overview says Lambda for compute. Terraform is idempotent, so resuming is safe. |
 | Front end hosting | S3 + CloudFront. `/api/*` goes to an HTTP API. | Serverless, one origin, so no CORS. |
@@ -50,15 +50,17 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 
 ## Sign in
 
-1. `POST /api/auth/start {resend?}`: the page calls this when it has no
-   session. It reads the phone number from the secret `SIGN_IN_SECRET` (E.164, as
-   a plain string or a one-entry JSON object), makes a 6 digit OTP and publishes
-   it to that number with SNS, as a transactional message. The request cannot
-   name a destination. Answers `202 {sent}`. If an earlier code is still good
-   (10 minutes, fewer than 5 guesses) nothing is sent and `sent` is `false`, so a
-   reload, or anyone else, cannot replace the code on the owner's phone.
-   `resend: true` sends a new one. Limits: 30 s between sends, 10 per hour. A
-   missing or malformed secret is `503` and uses up no send.
+1. `POST /api/auth/start {phone}`: the page asks for the owner's phone number.
+   The number is normalised (spaces, dashes, dots and brackets dropped) and must
+   be E.164, or the answer is `400 invalid_number`. That check looks only at the
+   input. The API then reads the number from the secret `SIGN_IN_SECRET` (E.164,
+   as a plain string or a one-entry JSON object) and compares it in constant
+   time. Only on a match does it make a 6 digit OTP and publish it to the
+   secret's number with SNS, as a transactional message. **The answer is always
+   `202 {sent: true}`**, so it cannot be used to find the number. A wrong number,
+   a limit (30 s between sends, 10 per hour), a secret that is not set up, a
+   failed send and a crash all end the same way. The reason is logged and counted
+   in `SignInNotSent{reason}`. The number is never logged.
 2. `POST /api/auth/verify {otp}`: the OTP is valid for 10 minutes and 5
    guesses. Stored as `HMAC-SHA256(salt, otp)`, compared in constant time.
    On success the owner's profile is created if it is missing (`admin`) and a

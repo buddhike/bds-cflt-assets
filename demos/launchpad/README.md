@@ -42,8 +42,8 @@ aws secretsmanager put-secret-value --secret-id <SignInSecretArn> --secret-strin
 
 Use the E.164 form, with the `+` and the country code. Later deploys leave the
 value alone, and the number can be changed at any time, with no deploy. The
-application never takes a number from a request, so the secret is the only place
-that decides where codes go. While SNS's SMS sandbox is on, the number must be
+application sends only to the number in the secret. The number a person types is
+compared with it and is never a destination. While SNS's SMS sandbox is on, the number must be
 verified there first (console: End User Messaging, SMS sandbox), or AWS must
 grant production access.
 
@@ -52,10 +52,14 @@ before running the script.
 
 ## Use
 
-1. Open the site. Without a session, Launchpad texts a six digit code to the
-   phone number in the secret and asks for it. Enter it to reach the demos.
-   Reloading the page does not send another code while the first is still good
-   (10 minutes, 5 guesses). **Send a new code** replaces it.
+1. Open the site and enter your phone number. If it is the number in the
+   secret, a six digit code is texted to it, and you enter the code to reach the
+   demos. The page says a code was sent whatever you type, so it never shows
+   whether a number is the right one. A wrong number gets no code. If none comes
+   when it should, look in the API function's log for `Sign-in code not sent`,
+   which names the reason, such as `too_soon`, `sign_in_unavailable` or
+   `sms_failed`, or at the `SignInNotSent` metric on the dashboard. A code works
+   for 10 minutes and 5 guesses, and a new one replaces it.
 2. Save your Confluent Cloud API key under **Confluent Cloud key** if the demo
    you want needs one.
 3. **Launch** a demo. When it is running, **Open demo** goes to its address.
