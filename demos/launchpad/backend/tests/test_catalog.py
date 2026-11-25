@@ -81,3 +81,7 @@ def test_get_rejects_ids_that_are_not_ids(svc, gh):
     catalog.refresh(svc)
     assert catalog.get(svc, "pims")["id"] == "pims"
     assert catalog.get(svc, "../pims") is None
+
+
+def test_get_loads_the_catalog_when_it_was_never_fetched(svc, gh):
+    assert catalog.get(svc, "pims")["id"] == "pims"

@@ -89,5 +89,9 @@ def list_demos(svc: Services, force: bool = False) -> list[dict]:
 
 
 def get(svc: Services, demo_id: str) -> dict | None:
-    item = svc.store.get("CATALOG", f"DEMO#{demo_id}") if ID.match(demo_id) else None
+    if not ID.match(demo_id):
+        return None
+    if svc.store.get("CATALOG", "META") is None:
+        list_demos(svc)  # nobody has listed the demos yet
+    item = svc.store.get("CATALOG", f"DEMO#{demo_id}")
     return _public(item) if item else None
