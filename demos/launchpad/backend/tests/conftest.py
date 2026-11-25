@@ -14,6 +14,7 @@ from launchpad.db import Store  # noqa: E402
 from launchpad.services import Services  # noqa: E402
 
 REGION = "us-east-1"
+OWNER_PHONE = "+61400000001"
 
 
 @pytest.fixture(autouse=True)
@@ -64,26 +65,26 @@ def svc(now):
         )
         kms = boto3.client("kms", region_name=REGION)
         key_id = kms.create_key()["KeyMetadata"]["KeyId"]
-        ses = boto3.client("ses", region_name=REGION)
-        ses.verify_email_identity(EmailAddress="launchpad@example.com")
+        secrets = boto3.client("secretsmanager", region_name=REGION)
+        sign_in_secret = secrets.create_secret(Name="launchpad-sign-in", SecretString=OWNER_PHONE)["ARN"]
         settings = Settings(
             table_name="launchpad",
             kms_key_id=key_id,
             state_bucket="state-bucket",
             region=REGION,
             super_user_email="boss@confluent.io",
-            allowed_email_domain="confluent.io",
-            sender_email="launchpad@example.com",
             demos_repo="owner/repo",
             demos_path="demos",
             demos_ref="main",
             github_token="",
             runner_function="launchpad-runner",
+            sign_in_secret=sign_in_secret,
         )
         yield Services(
             settings=settings,
             store=Store(table),
             kms=kms,
-            ses=ses,
+            sns=boto3.client("sns", region_name=REGION),
+            secrets=secrets,
             lambda_client=boto3.client("lambda", region_name=REGION),
         )

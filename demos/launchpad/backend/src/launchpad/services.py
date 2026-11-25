@@ -14,7 +14,8 @@ class Services:
     settings: Settings
     store: Store
     kms: Any
-    ses: Any
+    sns: Any
+    secrets: Any
     lambda_client: Any
     # urlopen-like callable used for outbound HTTP, replaced in tests.
     http: Any = None
@@ -27,6 +28,7 @@ class Services:
             settings=s,
             store=Store(ddb.Table(s.table_name)),
             kms=boto3.client("kms", region_name=s.region),
-            ses=boto3.client("ses", region_name=s.region),
+            sns=boto3.client("sns", region_name=s.region),
+            secrets=boto3.client("secretsmanager", region_name=s.region),
             lambda_client=boto3.client("lambda", region_name=s.region),
         )

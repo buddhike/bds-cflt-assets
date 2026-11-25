@@ -72,18 +72,14 @@ def _require_admin(svc: Services, req: Request) -> dict:
 
 
 def start_sign_in(svc, req, _):
-    auth.start(svc, req.json().get("email"))
-    return Response(202, {"sent": True})
+    sent = auth.start(svc, resend=req.json().get("resend") is True)
+    return Response(202, {"sent": sent})
 
 
 def verify_sign_in(svc, req, _):
-    body = req.json()
-    result = auth.verify(svc, body.get("email"), body.get("otp"))
-    token = result.pop("token", None)
-    resp = Response(200, result)
-    if token:
-        resp.cookies.append(session_cookie(token, svc.settings.session_hours * 3600))
-    return resp
+    result = auth.verify(svc, req.json().get("otp"))
+    token = result.pop("token")
+    return Response(200, result, [session_cookie(token, svc.settings.session_hours * 3600)])
 
 
 def sign_out(svc, req, _):
@@ -93,28 +89,6 @@ def sign_out(svc, req, _):
 
 def me(svc, req, _):
     return Response(200, _user_view(svc, _require_user(svc, req)))
-
-
-# --- admin ---------------------------------------------------------------
-
-
-def list_requests(svc, req, _):
-    _require_admin(svc, req)
-    return Response(200, {"requests": users.list_requests(svc)})
-
-
-def list_users(svc, req, _):
-    _require_admin(svc, req)
-    return Response(200, {"users": users.list_all(svc)})
-
-
-def decide(approve: bool):
-    def route(svc, req, params):
-        admin = _require_admin(svc, req)
-        email = users.normalise_email(svc, params["email"])
-        return Response(200, users.decide(svc, admin["email"], email, approve))
-
-    return route
 
 
 # --- credentials ---------------------------------------------------------
@@ -196,10 +170,6 @@ _route("POST", "/auth/start", start_sign_in)
 _route("POST", "/auth/verify", verify_sign_in)
 _route("POST", "/auth/logout", sign_out)
 _route("GET", "/me", me)
-_route("GET", "/admin/requests", list_requests)
-_route("GET", "/admin/users", list_users)
-_route("POST", "/admin/users/{email}/approve", decide(True))
-_route("POST", "/admin/users/{email}/deny", decide(False))
 _route("GET", "/credentials", get_credentials)
 _route("PUT", "/credentials", put_credentials)
 _route("DELETE", "/credentials", delete_credentials)

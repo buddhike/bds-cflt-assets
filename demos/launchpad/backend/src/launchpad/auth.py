@@ -1,10 +1,10 @@
-"""Passwordless sign in: an emailed one-time code, then a session."""
+"""Passwordless sign in: a one-time code sent by text message, then a session."""
 
 import hashlib
 import hmac
 import secrets
 
-from . import clock, mailer, metrics, users
+from . import clock, metrics, sms, users
 from .db import ConditionFailed
 from .errors import ApiError, bad_request, unauthorized
 from .services import Services
@@ -14,17 +14,26 @@ MAX_GUESSES = 5
 RESEND_SECONDS = 30
 MAX_SENDS_PER_HOUR = 10
 
+# There is one phone, so one code at a time.
+_OTP_KEY = "OTP#owner"
+
 
 def _otp_hash(salt: str, otp: str) -> str:
     return hmac.new(bytes.fromhex(salt), otp.encode(), hashlib.sha256).hexdigest()
 
 
-def start(svc: Services, raw_email: object) -> None:
-    """Email a one-time code. The answer is the same whether or not the user exists."""
-    email = users.normalise_email(svc, raw_email)
-    key = f"OTP#{email}"
+def start(svc: Services, resend: bool = False) -> bool:
+    """Text a one-time code to the owner's phone. Returns whether a message was sent.
+
+    The page asks for a code whenever someone arrives without a session, so a code
+    that is still good is left alone: otherwise anyone reloading the page, or
+    anyone at all, would replace the code that is on the owner's phone.
+    `resend` is the owner asking for a new one.
+    """
     now = clock.now()
-    previous = svc.store.get(key, "OTP") or {}
+    previous = svc.store.get(_OTP_KEY, "OTP") or {}
+    if not resend and previous and previous["ttl"] > now and previous["attempts"] < MAX_GUESSES:
+        return False
 
     if now - previous.get("sentAt", 0) < RESEND_SECONDS:
         raise ApiError(429, "too_soon", f"Wait {RESEND_SECONDS} seconds before asking for another code")
@@ -34,11 +43,13 @@ def start(svc: Services, raw_email: object) -> None:
     if hour_count >= MAX_SENDS_PER_HOUR:
         raise ApiError(429, "too_many", "Too many codes requested. Try again later")
 
+    # Read the number first, so that a missing one does not use up a send.
+    number = sms.sign_in_number(svc)
     otp = f"{secrets.randbelow(10**6):06d}"
     salt = secrets.token_hex(16)
     svc.store.put(
         {
-            "pk": key,
+            "pk": _OTP_KEY,
             "sk": "OTP",
             "salt": salt,
             "hash": _otp_hash(salt, otp),
@@ -49,47 +60,43 @@ def start(svc: Services, raw_email: object) -> None:
             "ttl": now + OTP_MINUTES * 60,
         }
     )
-    mailer.send_otp(svc, email, otp, OTP_MINUTES)
+    sms.send_code(svc, number, otp, OTP_MINUTES)
     metrics.emit("SignInStarted")
+    return True
 
 
-def verify(svc: Services, raw_email: object, raw_otp: object) -> dict:
-    """Check the code. Returns {"status", "user", "token"?}; a token only for approved users."""
-    email = users.normalise_email(svc, raw_email)
+def verify(svc: Services, raw_otp: object) -> dict:
+    """Check the code. Returns {"user", "token"}: the owner, signed in."""
     otp = raw_otp.strip() if isinstance(raw_otp, str) else ""
     invalid = bad_request("invalid_code", "That code is wrong or has expired")
     if not (otp.isdigit() and len(otp) == 6):
         raise invalid
 
-    key = f"OTP#{email}"
-    item = svc.store.get(key, "OTP")
+    item = svc.store.get(_OTP_KEY, "OTP")
     if item is None or item["ttl"] <= clock.now():
         metrics.emit("SignInFailed")
         raise invalid
     try:
         # Count the guess before looking at it, so parallel guesses cannot beat the limit.
         item = svc.store.update(
-            key,
+            _OTP_KEY,
             "OTP",
             "SET attempts = attempts + :one",
             {":one": 1, ":max": MAX_GUESSES},
             condition="attempts < :max",
         )
     except ConditionFailed:
-        svc.store.delete(key, "OTP")
+        svc.store.delete(_OTP_KEY, "OTP")
         metrics.emit("SignInFailed")
         raise invalid from None
     if not hmac.compare_digest(item["hash"], _otp_hash(item["salt"], otp)):
         metrics.emit("SignInFailed")
         raise invalid
-    svc.store.delete(key, "OTP")
+    svc.store.delete(_OTP_KEY, "OTP")
 
-    user = users.register_or_get(svc, email)
-    result: dict = {"status": user["status"], "user": users.public(user)}
-    if user["status"] == users.APPROVED:
-        result["token"] = _new_session(svc, email)
-        metrics.emit("SignInSucceeded")
-    return result
+    user = users.ensure_owner(svc)
+    metrics.emit("SignInSucceeded")
+    return {"user": users.public(user), "token": _new_session(svc, user["email"])}
 
 
 def _session_key(token: str) -> str:
@@ -110,16 +117,16 @@ def _new_session(svc: Services, email: str) -> str:
 
 
 def session_user(svc: Services, token: str | None) -> dict:
-    """The signed-in, still approved user for a session token, or a 401."""
+    """The signed-in owner for a session token, or a 401."""
     if not token:
         raise unauthorized()
     item = svc.store.get(_session_key(token), "SESSION")
     if item is None or item["ttl"] <= clock.now():
         raise unauthorized("Your session has expired. Sign in again")
     user = users.get(svc, item["email"])
-    # Checked on every request so that denying someone takes effect at once.
-    if user is None or user["status"] != users.APPROVED:
-        raise unauthorized("Your access is no longer approved")
+    # Checked on every request, so changing SuperUserEmail ends the old owner's sessions.
+    if user is None or user["email"] != svc.settings.super_user_email:
+        raise unauthorized("Your session has expired. Sign in again")
     return user
 
 

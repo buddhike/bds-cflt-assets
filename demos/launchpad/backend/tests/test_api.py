@@ -14,7 +14,7 @@ def app(svc, monkeypatch):
     gh.add_repo({"demos/pims/tf/main.tf": CC_TF, "demos/plain/tf/main.tf": GOOD_TF})
     svc.http = gh
     mails = []
-    monkeypatch.setattr("launchpad.mailer.send_otp", lambda s, email, otp, m: mails.append(otp))
+    monkeypatch.setattr("launchpad.sms.send_code", lambda s, number, otp, m: mails.append(otp))
     monkeypatch.setattr(svc.lambda_client, "invoke", lambda **kw: {})
 
     class App:
@@ -24,13 +24,12 @@ def app(svc, monkeypatch):
             raw = json.dumps(body).encode() if body is not None else b""
             return api.dispatch(svc, api.Request(method, path, h, cookies, raw))
 
-        def sign_in(self, email):
-            self.call("POST", "/auth/start", {"email": email})
-            r = self.call("POST", "/auth/verify", {"email": email, "otp": mails[-1]})
-            return r
+        def sign_in(self):
+            self.call("POST", "/auth/start", {"resend": True})
+            return self.call("POST", "/auth/verify", {"otp": mails[-1]})
 
-        def token(self, email):
-            r = self.sign_in(email)
+        def token(self):
+            r = self.sign_in()
             return r.cookies[0].split(";")[0].split("=", 1)[1]
 
     a = App()
@@ -39,48 +38,43 @@ def app(svc, monkeypatch):
 
 
 def test_sign_in_sets_a_hardened_cookie(app):
-    r = app.sign_in("boss@confluent.io")
-    assert r.status == 200 and r.body["status"] == "approved" and "token" not in r.body
+    r = app.sign_in()
+    assert r.status == 200 and r.body["user"]["role"] == "admin" and "token" not in r.body
     cookie = r.cookies[0]
     assert all(flag in cookie for flag in ("HttpOnly", "Secure", "SameSite=Strict", "Path=/api"))
     assert app.call("GET", "/me", token=cookie.split(";")[0].split("=", 1)[1]).status == 200
 
 
-def test_pending_user_gets_no_cookie_and_cannot_use_the_api(app):
-    r = app.sign_in("ann@confluent.io")
-    assert r.body["status"] == "pending" and r.cookies == []
-    assert app.call("GET", "/demos").status == 401
+def test_arriving_without_a_session_sends_one_code_and_reloading_sends_no_more(app, now):
+    assert app.call("GET", "/me").status == 401
+    r = app.call("POST", "/auth/start")
+    assert r.status == 202 and r.body == {"sent": True} and len(app.mails) == 1
+    now.t += auth.RESEND_SECONDS + 1
+    r = app.call("POST", "/auth/start")
+    assert r.status == 202 and r.body == {"sent": False} and len(app.mails) == 1
+    assert app.call("POST", "/auth/verify", {"otp": app.mails[-1]}).status == 200
 
 
-def test_admin_reviews_requests_and_approves(app, now):
-    admin = app.token("boss@confluent.io")
-    app.sign_in("ann@confluent.io")
-    assert [u["email"] for u in app.call("GET", "/admin/requests", token=admin).body["requests"]] == ["ann@confluent.io"]
-    r = app.call("POST", "/admin/users/ann@confluent.io/approve", token=admin)
-    assert r.status == 200 and r.body["status"] == "approved"
-    now.t += auth.RESEND_SECONDS
-    assert app.token("ann@confluent.io")
+def test_the_request_cannot_choose_where_the_code_goes(app):
+    app.call("POST", "/auth/start", {"email": "ann@confluent.io", "phone": "+61499999999", "PhoneNumber": "+61499999999"})
+    assert len(app.mails) == 1 and app.svc.store.get("OTP#owner", "OTP")
 
 
-def test_non_admin_cannot_use_admin_routes(app, now):
-    admin = app.token("boss@confluent.io")
-    app.sign_in("ann@confluent.io")
-    app.call("POST", "/admin/users/ann@confluent.io/approve", token=admin)
-    now.t += auth.RESEND_SECONDS
-    ann = app.token("ann@confluent.io")
-    for method, path in [("GET", "/admin/requests"), ("GET", "/admin/users"), ("POST", "/admin/users/ann@confluent.io/deny"), ("POST", "/demos/refresh")]:
-        assert app.call(method, path, token=ann).status == 403
+def test_the_admin_routes_are_gone(app):
+    token = app.token()
+    for method, path in [("GET", "/admin/requests"), ("GET", "/admin/users"), ("POST", "/admin/users/ann@confluent.io/approve")]:
+        assert app.call(method, path, token=token).status == 404
 
 
 def test_mutations_need_the_csrf_header(app):
-    token = app.token("boss@confluent.io")
+    token = app.token()
     r = app.call("PUT", "/credentials", {"apiKey": "KEY12345", "apiSecret": "secretsecret"}, token=token, headers={"x-launchpad": "0"})
     assert r.status == 403
     assert app.call("GET", "/credentials", token=token).body == {"configured": False}
 
 
 def test_credentials_flow_never_returns_the_secret(app):
-    token = app.token("boss@confluent.io")
+    token = app.token()
     r = app.call("PUT", "/credentials", {"apiKey": "KEY12345", "apiSecret": "topsecretvalue"}, token=token)
     assert r.body["configured"] and r.body["apiKeyHint"] == "2345"
     assert "topsecretvalue" not in json.dumps(app.call("GET", "/me", token=token).body)
@@ -88,7 +82,7 @@ def test_credentials_flow_never_returns_the_secret(app):
 
 
 def test_demo_list_launch_and_view(app):
-    token = app.token("boss@confluent.io")
+    token = app.token()
     demos = {d["id"]: d for d in app.call("GET", "/demos", token=token).body["demos"]}
     assert set(demos) == {"pims", "plain"} and demos["pims"]["needsConfluent"] and demos["plain"]["state"] is None
     r = app.call("POST", "/demos/pims/launch", token=token)
@@ -101,22 +95,8 @@ def test_demo_list_launch_and_view(app):
     assert app.call("GET", "/demos/nope", token=token).status == 404
 
 
-def test_teardown_permissions_are_reported_and_enforced(app, now):
-    admin = app.token("boss@confluent.io")
-    app.sign_in("ann@confluent.io")
-    app.call("POST", "/admin/users/ann@confluent.io/approve", token=admin)
-    now.t += auth.RESEND_SECONDS
-    ann = app.token("ann@confluent.io")
-    r = app.call("POST", "/demos/plain/launch", token=ann)
-    assert r.status == 200, r.body
-    run = runs.get_raw(app.svc, "plain")["runId"]
-    runs.finish(app.svc, "plain", run, runs.RUNNING, url="http://x")
-    assert app.call("GET", "/demos/plain", token=ann).body["state"]["canTearDown"]
-    assert app.call("POST", "/demos/plain/teardown", token=ann).body["state"]["status"] == "tearing_down"
-
-
 def test_logout_clears_the_cookie_and_the_session(app):
-    token = app.token("boss@confluent.io")
+    token = app.token()
     r = app.call("POST", "/auth/logout", token=token)
     assert "Max-Age=0" in r.cookies[0]
     assert app.call("GET", "/me", token=token).status == 401
@@ -131,11 +111,10 @@ def test_routing_errors_and_bad_bodies(app):
     assert r.status == 400
     r = api.dispatch(app.svc, api.Request("POST", "/auth/start", {"x-launchpad": "1"}, {}, b"x" * 20000))
     assert r.status == 413
-    assert app.call("POST", "/auth/start", {"email": "x@gmail.com"}).status == 400
 
 
 def test_unexpected_errors_do_not_leak(app, monkeypatch):
-    token = app.token("boss@confluent.io")
+    token = app.token()
     monkeypatch.setattr(catalog, "list_demos", lambda *a, **k: 1 / 0)
     r = app.call("GET", "/demos", token=token)
     assert r.status == 500 and r.body["error"]["message"] == "Something went wrong"
