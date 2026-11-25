@@ -84,7 +84,8 @@ overrides=(
   "FrontendArtifactKey=$frontend_key"
 )
 [[ -z ${GITHUB_TOKEN:-} ]] || overrides+=("GitHubToken=$GITHUB_TOKEN")
-overrides+=("${params[@]}")
+# bash 3.2 (macOS) calls an empty array unbound under `set -u`, hence the +.
+[[ ${#params[@]} -eq 0 ]] || overrides+=("${params[@]}")
 
 echo "==> Deploying stack $stack in $region"
 aws cloudformation deploy \
