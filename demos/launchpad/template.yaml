@@ -501,15 +501,22 @@ Resources:
 
           def handler(event, context):
               p = event["ResourceProperties"]
+              # The physical id must not change between updates. If it did (the default is
+              # the log stream's name), CloudFormation would delete the "old" resource after
+              # an update, and that delete would empty the bucket that was just filled.
+              physical = p["SiteBucket"]
               try:
                   if event["RequestType"] == "Delete":
-                      empty(p["SiteBucket"])
+                      # Only the real delete empties the bucket. A delete for an id from an
+                      # older version of this function is cleanup and must change nothing.
+                      if event.get("PhysicalResourceId") == physical:
+                          empty(p["SiteBucket"])
                   else:
                       deploy(p)
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical)
               except Exception as e:
                   print("failed", repr(e))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e)[:200])
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, physical, reason=str(e)[:200])
 
   SiteContent:
     Type: Custom::SiteContent
@@ -517,6 +524,9 @@ Resources:
       ServiceToken: !GetAtt SiteDeployer.Arn
       ArtifactBucket: !Ref FrontendArtifactBucket
       ArtifactKey: !Ref FrontendArtifactKey
+      # CloudFormation runs the deployer only when a property changes, and a change to
+      # its code is not one. Bump this when the code above changes.
+      DeployerVersion: "2"
       SiteBucket: !Ref SiteBucket
       DistributionId: !Ref Distribution
 
