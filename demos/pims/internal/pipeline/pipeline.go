@@ -111,6 +111,9 @@ type Deps struct {
 	PollInterval time.Duration
 	// Seed seeds the simulator; zero picks a time-based seed.
 	Seed uint64
+	// Titles replaces the display title of a step. The default titles describe
+	// the desktop app, which the server mode does not match.
+	Titles map[StepID]string
 }
 
 // Pipeline runs setup and teardown and owns the simulator and monitor.
@@ -152,7 +155,7 @@ func (p *Pipeline) resetSteps() {
 	defer p.mu.Unlock()
 	p.steps = make(map[StepID]StepState, len(Steps))
 	for _, s := range Steps {
-		p.steps[s.ID] = StepState{ID: s.ID, Title: s.Title, Status: StatusPending}
+		p.steps[s.ID] = StepState{ID: s.ID, Title: p.stepTitle(s.ID), Status: StatusPending}
 	}
 }
 
@@ -185,7 +188,10 @@ func (p *Pipeline) update(id StepID, status, detail string) {
 	}
 }
 
-func stepTitle(id StepID) string {
+func (p *Pipeline) stepTitle(id StepID) string {
+	if t, ok := p.deps.Titles[id]; ok {
+		return t
+	}
 	for _, s := range Steps {
 		if s.ID == id {
 			return s.Title
@@ -197,7 +203,7 @@ func stepTitle(id StepID) string {
 // run executes one step, recording its outcome.
 func (p *Pipeline) run(id StepID, fn func() (string, error)) error {
 	p.update(id, StatusRunning, "")
-	title := stepTitle(id)
+	title := p.stepTitle(id)
 	p.log.Info("Setup step started", "step", id, "title", title)
 	detail, err := fn()
 	if err != nil {

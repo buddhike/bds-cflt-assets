@@ -466,3 +466,19 @@ func TestQueryRunsOneAtATime(t *testing.T) {
 		t.Fatalf("Query() after the first ended = %v", err)
 	}
 }
+
+func TestTitlesCanBeOverridden(t *testing.T) {
+	d := fakeDeps(&recorder{})
+	d.Titles = map[StepID]string{StepDocker: "Wait for the task"}
+	p := New(d, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	got := map[StepID]string{}
+	for _, s := range p.StepStates() {
+		got[s.ID] = s.Title
+	}
+	if got[StepDocker] != "Wait for the task" {
+		t.Errorf("docker title = %q", got[StepDocker])
+	}
+	if got[StepCloud] != "Provision Confluent Cloud" {
+		t.Errorf("a title without an override changed: %q", got[StepCloud])
+	}
+}
