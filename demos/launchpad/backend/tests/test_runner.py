@@ -1,6 +1,7 @@
 import json
 import stat
 import time
+from pathlib import Path
 
 import pytest
 
@@ -82,6 +83,14 @@ def test_successful_launch_reads_the_url(env):
     assert any(c.startswith("terraform apply -auto-approve") for c in calls)
     backend = (runner.WORK / "src/plain/tf/zz_launchpad_backend.tf").read_text()
     assert 'backend "s3"' in backend
+
+
+def test_directories_terraform_is_pointed_at_exist(env):
+    ev = launch(env)
+    runner.handler_run(env, ev, lambda: 900)
+    e = runner.build_env(env, "plain", None)
+    for name in ("TF_PLUGIN_CACHE_DIR", "TF_DATA_DIR", "HOME"):
+        assert Path(e[name]).is_dir(), f"{name} points at {e[name]}, which does not exist"
 
 
 def test_credentials_reach_terraform_but_never_the_log(env):

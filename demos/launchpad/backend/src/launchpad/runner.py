@@ -90,8 +90,9 @@ def handler_run(svc: Services, event: dict, remaining_seconds: Callable[[], floa
             tail = terraform.LogTail([creds.api_secret, creds.api_key])
         tail.add(f"Launchpad: {'destroying' if destroy else 'applying'} {demo_id} at {state['ref'][:12]} (slice {resumes + 1})")
 
-        WORK.mkdir(parents=True, exist_ok=True)
-        (WORK / "home").mkdir(exist_ok=True)
+        # Terraform fails on a plugin cache or data directory that does not exist.
+        for sub in ("home", "plugin-cache", f"data/{demo_id}"):
+            (WORK / sub).mkdir(parents=True, exist_ok=True)
         demo_dir = source.download(svc, state["ref"], state["path"], WORK / "src" / demo_id)
         problems = interface.check(source.read_tf(demo_dir)).problems
         if problems:
