@@ -220,10 +220,11 @@ resource "aws_ecs_task_definition" "pims" {
       memoryReservation = 1024
       healthCheck = {
         # ping succeeds even when access is denied, so it needs no password.
-        command     = ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
-        interval    = 5
+        command = ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+        # ECS allows at most 10 retries, so the 150 s of patience comes from the interval.
+        interval    = 15
         timeout     = 5
-        retries     = 30
+        retries     = 10
         startPeriod = 30
       }
       logConfiguration = local.log_options["mysql"]
@@ -238,10 +239,11 @@ resource "aws_ecs_task_definition" "pims" {
       # Heap 1.5 GB plus the JVM's own and the plugins'.
       memoryReservation = 2560
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors > /dev/null"]
-        interval    = 10
+        command = ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors > /dev/null"]
+        # ECS allows at most 10 retries, so the 300 s of patience comes from the interval.
+        interval    = 30
         timeout     = 5
-        retries     = 30
+        retries     = 10
         startPeriod = 120
       }
       logConfiguration = local.log_options["connect"]
