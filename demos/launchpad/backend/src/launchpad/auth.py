@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import logging
 import secrets
 
 from . import clock, metrics, sms, users
@@ -14,6 +15,8 @@ MAX_GUESSES = 5
 RESEND_SECONDS = 30
 MAX_SENDS_PER_HOUR = 10
 
+log = logging.getLogger(__name__)
+
 # There is one phone, so one code at a time.
 _OTP_KEY = "OTP#owner"
 
@@ -22,19 +25,33 @@ def _otp_hash(salt: str, otp: str) -> str:
     return hmac.new(bytes.fromhex(salt), otp.encode(), hashlib.sha256).hexdigest()
 
 
-def start(svc: Services, resend: bool = False) -> bool:
-    """Text a one-time code to the owner's phone. Returns whether a message was sent.
+def start(svc: Services, raw_number: object) -> None:
+    """Text a one-time code to the owner's phone, if `raw_number` is that phone.
 
-    The page asks for a code whenever someone arrives without a session, so a code
-    that is still good is left alone: otherwise anyone reloading the page, or
-    anyone at all, would replace the code that is on the owner's phone.
-    `resend` is the owner asking for a new one.
+    The caller learns nothing either way. A number that is not the owner's, a
+    number that is, a send held back by a limit, a secret that is not set up and
+    a failed send all end the same, so the answer cannot be used to find the
+    number. The reason is logged and counted. Only a number that cannot be a
+    phone number at all is refused, which says nothing about the right one.
     """
+    given = sms.normalise_number(raw_number)
+    try:
+        _send_to_owner(svc, given)
+    except ApiError as err:
+        log.warning("Sign-in code not sent: %s", err.code)
+        metrics.emit("SignInNotSent", reason=err.code)
+    except Exception:  # noqa: BLE001 - a crash must look the same as everything else
+        log.exception("Sign-in code not sent")
+        metrics.emit("SignInNotSent", reason="error")
+
+
+def _send_to_owner(svc: Services, given: str) -> None:
+    owner = sms.sign_in_number(svc)
+    if not hmac.compare_digest(owner.encode(), given.encode()):
+        raise ApiError(403, "number_mismatch", "The number is not the owner's")
+
     now = clock.now()
     previous = svc.store.get(_OTP_KEY, "OTP") or {}
-    if not resend and previous and previous["ttl"] > now and previous["attempts"] < MAX_GUESSES:
-        return False
-
     if now - previous.get("sentAt", 0) < RESEND_SECONDS:
         raise ApiError(429, "too_soon", f"Wait {RESEND_SECONDS} seconds before asking for another code")
     hour_start, hour_count = previous.get("hourStart", now), previous.get("hourCount", 0)
@@ -43,8 +60,6 @@ def start(svc: Services, resend: bool = False) -> bool:
     if hour_count >= MAX_SENDS_PER_HOUR:
         raise ApiError(429, "too_many", "Too many codes requested. Try again later")
 
-    # Read the number first, so that a missing one does not use up a send.
-    number = sms.sign_in_number(svc)
     otp = f"{secrets.randbelow(10**6):06d}"
     salt = secrets.token_hex(16)
     svc.store.put(
@@ -60,9 +75,8 @@ def start(svc: Services, resend: bool = False) -> bool:
             "ttl": now + OTP_MINUTES * 60,
         }
     )
-    sms.send_code(svc, number, otp, OTP_MINUTES)
+    sms.send_code(svc, owner, otp, OTP_MINUTES)
     metrics.emit("SignInStarted")
-    return True
 
 
 def verify(svc: Services, raw_otp: object) -> dict:

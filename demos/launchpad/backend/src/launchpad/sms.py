@@ -36,6 +36,18 @@ def _number_from(raw: str) -> str:
     return text
 
 
+def normalise_number(raw: object) -> str:
+    """What a person typed, as E.164, or a 400. Spaces, dashes, dots and brackets are dropped.
+
+    This looks only at the input, never at the stored number, so a 400 says nothing
+    about which number is right.
+    """
+    text = re.sub(r"[ \-.()]", "", raw) if isinstance(raw, str) else ""
+    if not _E164.match(text):
+        raise ApiError(400, "invalid_number", "Enter your phone number with the country code, like +61400000000")
+    return text
+
+
 def sign_in_number(svc: Services) -> str:
     """The phone number codes are sent to, in E.164 form such as +61400000000."""
     try:

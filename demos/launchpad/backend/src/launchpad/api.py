@@ -72,8 +72,8 @@ def _require_admin(svc: Services, req: Request) -> dict:
 
 
 def start_sign_in(svc, req, _):
-    sent = auth.start(svc, resend=req.json().get("resend") is True)
-    return Response(202, {"sent": sent})
+    auth.start(svc, req.json().get("phone"))
+    return Response(202, {"sent": True})  # always: see auth.start
 
 
 def verify_sign_in(svc, req, _):

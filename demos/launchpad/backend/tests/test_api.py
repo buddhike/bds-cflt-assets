@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from conftest import OWNER_PHONE
+
 from launchpad import api, auth, catalog, credentials, runs
 from launchpad.handlers import api as lambda_api
 
@@ -25,7 +27,7 @@ def app(svc, monkeypatch):
             return api.dispatch(svc, api.Request(method, path, h, cookies, raw))
 
         def sign_in(self):
-            self.call("POST", "/auth/start", {"resend": True})
+            self.call("POST", "/auth/start", {"phone": OWNER_PHONE})
             return self.call("POST", "/auth/verify", {"otp": mails[-1]})
 
         def token(self):
@@ -45,19 +47,26 @@ def test_sign_in_sets_a_hardened_cookie(app):
     assert app.call("GET", "/me", token=cookie.split(";")[0].split("=", 1)[1]).status == 200
 
 
-def test_arriving_without_a_session_sends_one_code_and_reloading_sends_no_more(app, now):
-    assert app.call("GET", "/me").status == 401
-    r = app.call("POST", "/auth/start")
-    assert r.status == 202 and r.body == {"sent": True} and len(app.mails) == 1
+def test_the_answer_is_the_same_for_the_right_number_and_a_wrong_one(app, now):
+    right = app.call("POST", "/auth/start", {"phone": OWNER_PHONE})
     now.t += auth.RESEND_SECONDS + 1
-    r = app.call("POST", "/auth/start")
-    assert r.status == 202 and r.body == {"sent": False} and len(app.mails) == 1
-    assert app.call("POST", "/auth/verify", {"otp": app.mails[-1]}).status == 200
+    wrong = app.call("POST", "/auth/start", {"phone": "+61400000099"})
+    assert (right.status, right.body, right.cookies) == (wrong.status, wrong.body, wrong.cookies) == (202, {"sent": True}, [])
+    assert len(app.mails) == 1
 
 
-def test_the_request_cannot_choose_where_the_code_goes(app):
-    app.call("POST", "/auth/start", {"email": "ann@confluent.io", "phone": "+61499999999", "PhoneNumber": "+61499999999"})
-    assert len(app.mails) == 1 and app.svc.store.get("OTP#owner", "OTP")
+def test_the_page_can_sign_in_with_the_number_and_the_code(app):
+    assert app.call("GET", "/me").status == 401
+    app.call("POST", "/auth/start", {"phone": "+61 400 000 001"})
+    r = app.call("POST", "/auth/verify", {"otp": app.mails[-1]})
+    assert r.status == 200 and r.cookies
+
+
+def test_a_request_that_is_not_a_number_is_a_400(app):
+    for body in [{}, {"phone": ""}, {"phone": "hello"}, {"email": "ann@confluent.io"}]:
+        r = app.call("POST", "/auth/start", body)
+        assert r.status == 400 and r.body["error"]["code"] == "invalid_number", body
+    assert app.mails == []
 
 
 def test_the_admin_routes_are_gone(app):
