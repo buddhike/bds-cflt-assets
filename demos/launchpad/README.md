@@ -4,13 +4,13 @@ Launches demos into an AWS account and tears them down again. The design is in
 [docs/specs/002_design.md](docs/specs/002_design.md), which implements
 [001_overview.md](docs/specs/001_overview.md).
 
-* Backend: Python on AWS Lambda, DynamoDB, SNS, Secrets Manager, KMS. See [backend/](backend).
+* Backend: Go on AWS Lambda, DynamoDB, SNS, Secrets Manager, KMS. See [backend/](backend).
 * Front end: React. See [frontend/](frontend).
 * Deployment: one CloudFormation template, [template.yaml](template.yaml).
 
 ## Deploy
 
-You need the AWS CLI with credentials, Node.js and `zip`.
+You need the AWS CLI with credentials, Go 1.26 or later, Node.js and `zip`.
 
 ```sh
 scripts/deploy.sh --stack-prefix acme
@@ -103,11 +103,18 @@ fine. Make sure `apply` and `destroy` are safe to repeat.
 ## Develop
 
 ```sh
-cd backend && python -m venv .venv && .venv/bin/pip install boto3 pytest 'moto[dynamodb,kms,sns,secretsmanager]'
-.venv/bin/python -m pytest
-
-cd frontend && npm ci && npm run typecheck && npm run build
+(cd backend && go vet ./... && go test -race ./...)
+(cd frontend && npm ci && npm run typecheck && npm run build)
 cfn-lint template.yaml
+```
+
+The backend tests keep their table in memory. To run them against a real
+DynamoDB, which is what keeps that stand-in honest, start DynamoDB Local and name
+it:
+
+```sh
+docker run -d --rm -p 8000:8000 amazon/dynamodb-local -jar DynamoDBLocal.jar -inMemory
+(cd backend && LAUNCHPAD_DYNAMODB_ENDPOINT=http://localhost:8000 go test ./...)
 ```
 
 `npm run dev` serves the app. To use a deployed stack's API, run

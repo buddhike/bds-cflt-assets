@@ -224,9 +224,10 @@ Resources:
     DependsOn: ApiLogs
     Properties:
       FunctionName: !Sub ${AWS::StackName}-api
-      Runtime: python3.13
-      Handler: launchpad.handlers.api.handler
-      Code: build/backend
+      Runtime: provided.al2023
+      Architectures: [x86_64]
+      Handler: bootstrap
+      Code: build/api.zip
       Role: !GetAtt ApiRole.Arn
       Timeout: 25
       MemorySize: 256
@@ -251,9 +252,10 @@ Resources:
     DependsOn: RunnerLogs
     Properties:
       FunctionName: !Sub ${AWS::StackName}-runner
-      Runtime: python3.13
-      Handler: launchpad.handlers.runner.handler
-      Code: build/backend
+      Runtime: provided.al2023
+      Architectures: [x86_64]
+      Handler: bootstrap
+      Code: build/runner.zip
       Role: !GetAtt RunnerRole.Arn
       Timeout: 900
       MemorySize: 2048
@@ -453,70 +455,19 @@ Resources:
       Tags:
         - { Key: "launchpad:managed", Value: "true" }
 
+  # Its code is backend/cmd/sitedeployer. CloudFormation calls it for SiteContent below.
   SiteDeployer:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: python3.13
-      Handler: index.handler
+      Runtime: provided.al2023
+      Architectures: [x86_64]
+      Handler: bootstrap
+      Code: build/sitedeployer.zip
       Role: !GetAtt SiteDeployerRole.Arn
       Timeout: 300
       MemorySize: 512
       Tags:
         - { Key: "launchpad:managed", Value: "true" }
-      Code:
-        ZipFile: |
-          import io, mimetypes, zipfile, time
-          import boto3
-          import cfnresponse
-
-          s3 = boto3.client("s3")
-          cf = boto3.client("cloudfront")
-
-          def empty(bucket):
-              for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
-                  keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-                  if keys:
-                      s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
-
-          def deploy(p):
-              body = s3.get_object(Bucket=p["ArtifactBucket"], Key=p["ArtifactKey"])["Body"].read()
-              wanted = set()
-              with zipfile.ZipFile(io.BytesIO(body)) as z:
-                  for name in z.namelist():
-                      if name.endswith("/") or name.startswith("/") or ".." in name.split("/"):
-                          continue
-                      wanted.add(name)
-                      ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
-                      # Built files carry a hash in their name. The page that names them must not be cached.
-                      cache = "no-cache" if name == "index.html" else "public, max-age=31536000, immutable"
-                      s3.put_object(Bucket=p["SiteBucket"], Key=name, Body=z.read(name), ContentType=ctype, CacheControl=cache)
-              for page in s3.get_paginator("list_objects_v2").paginate(Bucket=p["SiteBucket"]):
-                  stale = [{"Key": o["Key"]} for o in page.get("Contents", []) if o["Key"] not in wanted]
-                  if stale:
-                      s3.delete_objects(Bucket=p["SiteBucket"], Delete={"Objects": stale})
-              cf.create_invalidation(
-                  DistributionId=p["DistributionId"],
-                  InvalidationBatch={"Paths": {"Quantity": 1, "Items": ["/*"]}, "CallerReference": str(time.time())},
-              )
-
-          def handler(event, context):
-              p = event["ResourceProperties"]
-              # The physical id must not change between updates. If it did (the default is
-              # the log stream's name), CloudFormation would delete the "old" resource after
-              # an update, and that delete would empty the bucket that was just filled.
-              physical = p["SiteBucket"]
-              try:
-                  if event["RequestType"] == "Delete":
-                      # Only the real delete empties the bucket. A delete for an id from an
-                      # older version of this function is cleanup and must change nothing.
-                      if event.get("PhysicalResourceId") == physical:
-                          empty(p["SiteBucket"])
-                  else:
-                      deploy(p)
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical)
-              except Exception as e:
-                  print("failed", repr(e))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, physical, reason=str(e)[:200])
 
   SiteContent:
     Type: Custom::SiteContent
@@ -525,8 +476,8 @@ Resources:
       ArtifactBucket: !Ref FrontendArtifactBucket
       ArtifactKey: !Ref FrontendArtifactKey
       # CloudFormation runs the deployer only when a property changes, and a change to
-      # its code is not one. Bump this when the code above changes.
-      DeployerVersion: "2"
+      # its code is not one. Bump this when the code of SiteDeployer changes.
+      DeployerVersion: "3"
       SiteBucket: !Ref SiteBucket
       DistributionId: !Ref Distribution
 

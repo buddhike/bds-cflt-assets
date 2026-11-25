@@ -13,6 +13,7 @@ segments of the build follow.
 | Who signs in | One person, the owner (`SuperUserEmail`). The overview's registration and review list are not built. | The code goes to one phone number, so only its holder can sign in. |
 | Sign in | The owner types their phone number. If it matches the number in a Secrets Manager secret, a one-time code is texted to it through SNS. The page is always told that a code was sent. | SES mail from a `confluent.io` address was dropped by the recipient's DMARC policy, `p=reject`. The overview's emailed OTP and `@confluent.io` registration are superseded. |
 | Credentials store | KMS encrypted blob in DynamoDB. | The overview says DynamoDB for storage. KMS keeps the secret off the page and out of backups in plain text. |
+| Language | Go, on the `provided.al2023` runtime (x86_64), as three programs: `api`, `runner` and `sitedeployer`. | The overview says the functions are written in Python. That was changed on request. One static binary per function starts fast, and the runner needs no interpreter next to Terraform. |
 | Terraform compute | Lambda, container-less. The binary is downloaded to `/tmp`, checksum pinned. A run that hits the Lambda time limit is interrupted and resumed by a new invocation. | The overview says Lambda for compute. Terraform is idempotent, so resuming is safe. |
 | Front end hosting | S3 + CloudFront. `/api/*` goes to an HTTP API. | Serverless, one origin, so no CORS. |
 
@@ -32,6 +33,30 @@ Browser ── CloudFront ──┬── S3 (React build)
 Everything Launchpad creates carries the tag `launchpad:managed=true`.
 Everything a demo creates carries `launchpad:managed=true` and
 `launchpad:demo=<id>`.
+
+## Code
+
+One Go module in `backend/`. A program in `cmd/` only reads its environment and
+hands events to a package in `internal/`.
+
+| Program | Package | Does |
+|---|---|---|
+| `cmd/api` | `api` | HTTP API behind API Gateway: routing, sessions, JSON |
+| `cmd/runner` | `runner` | Applies or destroys one demo, in slices of at most one invocation |
+| `cmd/sitedeployer` | `site` | The `SiteContent` custom resource: copies the React build to the site bucket and empties the bucket on delete |
+
+The rest of `internal/` is what they share: `auth`, `sms`, `users`,
+`credentials`, `catalog`, `runs`, `github`, `source`, `terraform`, `demoif`
+(the demo interface check), `db`, `metrics` and `config`. `services` holds the
+AWS clients and settings, each behind a small interface so tests can replace it.
+
+`db` takes conditions and updates as Go values (`db.Equal`, `db.OneOf`, the
+`Add` of a `db.Update`) rather than expression strings. `db.Dynamo` turns them into DynamoDB
+expressions and `db.Memory` evaluates them directly, so the logic that depends
+on conditional writes (one run at a time, the 5 guesses of a code) is tested
+without a database. The tests of `db`, and every other package's tests, also run
+against a real DynamoDB when `LAUNCHPAD_DYNAMODB_ENDPOINT` names one, for example
+DynamoDB Local. That is what keeps `db.Memory` honest.
 
 ## DynamoDB (single table `pk`/`sk`)
 
@@ -142,7 +167,7 @@ CloudFront health.
 
 ## Build order
 
-1. Backend foundations: config, table access, metrics, tags, tests.
+1. Backend foundations: config, table access, metrics, tests.
 2. Auth and users.
 3. Credentials.
 4. Catalog and demo source.

@@ -15,12 +15,12 @@
 #   --stack NAME             Stack name after the prefix. Default: launchpad
 #   --region REGION          Default: the AWS CLI's region.
 #   --param KEY=VALUE        Extra template parameter, repeatable. Example:
-#                            --param DemosRef=launchpad --param CreateSesIdentity=false
+#                            --param DemosRef=launchpad --param DemosPath=launchpad-demos
 #
 # A GitHub token for a private repository is read from $GITHUB_TOKEN, not from an
 # argument, so it does not show up in the process list.
 #
-# Needs: aws, zip, npm, a shasum or sha256sum.
+# Needs: aws, go (1.26 or later), zip, npm, a shasum or sha256sum.
 
 set -euo pipefail
 
@@ -67,11 +67,21 @@ if [[ -z $bucket ]]; then
     --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" --output text)
 fi
 
+# The three Lambda functions are Go programs on the provided.al2023 runtime, each
+# built into a file called bootstrap. The zips are made the same way every time
+# (a fixed file time, no extra attributes), so code that did not change keeps its
+# key in S3 and CloudFormation leaves the function alone.
 echo "==> Building the backend"
 rm -rf "$build"
-mkdir -p "$build/backend"
-cp -R "$root/backend/src/launchpad" "$build/backend/launchpad"
-find "$build/backend" -name __pycache__ -type d -prune -exec rm -rf {} +
+mkdir -p "$build"
+for fn in api runner sitedeployer; do
+  mkdir -p "$build/$fn"
+  (cd "$root/backend" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -tags lambda.norpc -trimpath -ldflags='-s -w' -o "$build/$fn/bootstrap" "./cmd/$fn")
+  chmod 755 "$build/$fn/bootstrap"
+  touch -t 198001010000 "$build/$fn/bootstrap"
+  (cd "$build/$fn" && zip -qX "../$fn.zip" bootstrap)
+done
 
 echo "==> Building the web app"
 (cd "$root/frontend" && npm ci --no-audit --no-fund && npm run build)
