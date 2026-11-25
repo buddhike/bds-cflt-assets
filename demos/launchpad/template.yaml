@@ -135,6 +135,11 @@ Resources:
   SesIdentity:
     Type: AWS::SES::EmailIdentity
     Condition: MakeSesIdentity
+    # Deleting the stack deletes the identity. This is the default, stated so that
+    # nobody adds a Retain by accident. With CreateSesIdentity=false the stack
+    # never owns an identity, so it deletes none.
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       EmailIdentity: !Ref SenderEmail
 
