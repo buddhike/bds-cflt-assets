@@ -2,14 +2,18 @@
 #
 # Builds Launchpad and deploys it as a CloudFormation stack.
 #
-#   scripts/deploy.sh --sender-email launchpad@example.com
+#   scripts/deploy.sh --stack-prefix acme --sender-email launchpad@example.com
 #
-# Options (all but the first are optional):
+# Options (all but the first two are optional):
+#   --stack-prefix PREFIX    Required. Starts the name of every stack the script makes, so
+#                            several Launchpads can share an account: acme-launchpad and
+#                            acme-launchpad-artifacts. Lower case letters, digits and
+#                            hyphens, starting with a letter, at most 20 characters.
 #   --sender-email ADDRESS   Where sign-in codes come from. Must be a verified SES identity.
 #   --artifact-bucket NAME   An existing S3 bucket for the Lambda code and the web build.
 #                            Default: a bucket that the script creates in its own stack,
 #                            <stack>-artifacts (see artifacts.yaml).
-#   --stack NAME             Stack name. Default: launchpad
+#   --stack NAME             Stack name after the prefix. Default: launchpad
 #   --region REGION          Default: the AWS CLI's region.
 #   --param KEY=VALUE        Extra template parameter, repeatable. Example:
 #                            --param DemosRef=launchpad --param CreateSesIdentity=false
@@ -22,6 +26,7 @@
 set -euo pipefail
 
 stack=launchpad
+prefix=
 region=${AWS_REGION:-${AWS_DEFAULT_REGION:-}}
 bucket=
 sender=
@@ -31,6 +36,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --artifact-bucket) bucket=$2; shift 2 ;;
     --sender-email) sender=$2; shift 2 ;;
+    --stack-prefix) prefix=$2; shift 2 ;;
     --stack) stack=$2; shift 2 ;;
     --region) region=$2; shift 2 ;;
     --param) params+=("$2"); shift 2 ;;
@@ -38,7 +44,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[[ -n $sender ]] || { echo "--sender-email is required (see --help)" >&2; exit 2; }
+[[ -n $prefix && -n $sender ]] || { echo "--stack-prefix and --sender-email are required (see --help)" >&2; exit 2; }
+[[ $prefix =~ ^[a-z][a-z0-9-]{0,19}$ ]] || { echo "--stack-prefix must be lower case letters, digits and hyphens, start with a letter, and have at most 20 characters" >&2; exit 2; }
+stack=$prefix-$stack
+# The name is part of the Lambda function names, which AWS limits to 64 characters.
+(( ${#stack} <= 40 )) || { echo "stack name $stack is too long: at most 40 characters" >&2; exit 2; }
 [[ -n $region ]] || region=$(aws configure get region || true)
 [[ -n $region ]] || { echo "no region: pass --region or set one for the AWS CLI" >&2; exit 2; }
 export AWS_DEFAULT_REGION=$region

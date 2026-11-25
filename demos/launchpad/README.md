@@ -13,13 +13,15 @@ Launches demos into an AWS account and tears them down again. The design is in
 You need the AWS CLI with credentials, Node.js and `zip`.
 
 ```sh
-scripts/deploy.sh --sender-email launchpad@example.com
+scripts/deploy.sh --stack-prefix acme --sender-email launchpad@example.com
 ```
 
 It prints the site URL and the dashboard URL. CloudFormation reads the Lambda
 code from S3 before it creates anything, so the script first deploys a small
-stack, `launchpad-artifacts` ([artifacts.yaml](artifacts.yaml)), whose bucket
-holds the builds. Useful options:
+stack, `<prefix>-launchpad-artifacts` ([artifacts.yaml](artifacts.yaml)), whose bucket
+holds the builds. `--stack-prefix` is required. It starts the name of every stack
+the script makes (`acme-launchpad`), so more than one Launchpad can share an
+account. Useful options:
 
 | Option | Meaning |
 |---|---|
