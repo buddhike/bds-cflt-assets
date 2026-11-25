@@ -2,11 +2,13 @@
 #
 # Builds Launchpad and deploys it as a CloudFormation stack.
 #
-#   scripts/deploy.sh --artifact-bucket my-bucket --sender-email launchpad@example.com
+#   scripts/deploy.sh --sender-email launchpad@example.com
 #
-# Options (all but the first two are optional):
-#   --artifact-bucket NAME   An existing S3 bucket for the Lambda code and the web build.
+# Options (all but the first are optional):
 #   --sender-email ADDRESS   Where sign-in codes come from. Must be a verified SES identity.
+#   --artifact-bucket NAME   An existing S3 bucket for the Lambda code and the web build.
+#                            Default: a bucket that the script creates in its own stack,
+#                            <stack>-artifacts (see artifacts.yaml).
 #   --stack NAME             Stack name. Default: launchpad
 #   --region REGION          Default: the AWS CLI's region.
 #   --param KEY=VALUE        Extra template parameter, repeatable. Example:
@@ -36,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[[ -n $bucket && -n $sender ]] || { echo "--artifact-bucket and --sender-email are required (see --help)" >&2; exit 2; }
+[[ -n $sender ]] || { echo "--sender-email is required (see --help)" >&2; exit 2; }
 [[ -n $region ]] || region=$(aws configure get region || true)
 [[ -n $region ]] || { echo "no region: pass --region or set one for the AWS CLI" >&2; exit 2; }
 export AWS_DEFAULT_REGION=$region
@@ -44,6 +46,19 @@ export AWS_DEFAULT_REGION=$region
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=$root/build
 sha() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -c1-16; }
+
+# CloudFormation reads the code from S3 before it creates anything, so the bucket
+# must exist before the Launchpad stack does. Make it in a small stack of its own.
+if [[ -z $bucket ]]; then
+  echo "==> Preparing the artifact bucket (stack $stack-artifacts)"
+  aws cloudformation deploy \
+    --template-file "$root/artifacts.yaml" \
+    --stack-name "$stack-artifacts" \
+    --tags launchpad:managed=true \
+    --no-fail-on-empty-changeset >/dev/null
+  bucket=$(aws cloudformation describe-stacks --stack-name "$stack-artifacts" \
+    --query "Stacks[0].Outputs[?OutputKey=='BucketName'].OutputValue" --output text)
+fi
 
 echo "==> Building the backend"
 rm -rf "$build"

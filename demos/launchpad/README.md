@@ -10,19 +10,20 @@ Launches demos into an AWS account and tears them down again. The design is in
 
 ## Deploy
 
-You need the AWS CLI with credentials, Node.js, `zip`, and an S3 bucket in the
-target region to stage the code in.
+You need the AWS CLI with credentials, Node.js and `zip`.
 
 ```sh
-scripts/deploy.sh \
-  --artifact-bucket my-staging-bucket \
-  --sender-email launchpad@example.com
+scripts/deploy.sh --sender-email launchpad@example.com
 ```
 
-It prints the site URL and the dashboard URL. Useful options:
+It prints the site URL and the dashboard URL. CloudFormation reads the Lambda
+code from S3 before it creates anything, so the script first deploys a small
+stack, `launchpad-artifacts` ([artifacts.yaml](artifacts.yaml)), whose bucket
+holds the builds. Useful options:
 
 | Option | Meaning |
 |---|---|
+| `--artifact-bucket my-bucket` | Stage the builds in an existing bucket in the same region, and skip the extra stack |
 | `--param SuperUserEmail=you@example.com` | Who becomes the super user on their first sign-in. The template has a default |
 | `--param AllowedEmailDomain=example.com` | Only addresses at this domain can register. Default `confluent.io` |
 | `--param DemosRef=launchpad` | The branch demos are read from. Default `main` |
