@@ -29,6 +29,8 @@ const (
 	CSRFHeader     = "X-PIMS"
 	maxBody        = 1 << 20
 	heartbeatEvery = 15 * time.Second
+	// writeTimeout bounds one write to an event stream, so a stalled peer cannot hold a goroutine.
+	writeTimeout = 30 * time.Second
 )
 
 // Handler serves the API and the UI in assets (the built React app).
@@ -41,6 +43,11 @@ func (s *Service) Handler(assets fs.FS) http.Handler {
 	mux.HandleFunc("POST /api/simulation/rate", s.handleRate(s.SetRate))
 	mux.HandleFunc("POST /api/simulation/stop", s.handleStop)
 	mux.HandleFunc("POST /api/query", s.handleQuery)
+	// An unknown API path is an error, not the app's page: a mistyped endpoint should not
+	// fail as a JSON parse error in the browser.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, errors.New("no such endpoint"))
+	})
 	mux.Handle("/", staticHandler(assets))
 
 	gate := s.gate(mux)
@@ -79,7 +86,11 @@ func (s *Service) gate(next http.Handler) http.Handler {
 				Value:    want,
 				Path:     "/",
 				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
+				// Lax, not Strict: the first visit is a click from another site (Launchpad), and a
+				// redirect chain that began there is cross-site, so a Strict cookie would not come
+				// back on the redirected request. Everything that changes state is a non-GET and
+				// needs the CSRF header as well.
+				SameSite: http.SameSiteLaxMode,
 				// The load balancer may speak plain HTTP, where a Secure cookie would never come back.
 				Secure: r.Header.Get("X-Forwarded-Proto") == "https",
 				MaxAge: 7 * 24 * 3600,
@@ -213,9 +224,11 @@ func (s *Service) handleEvents(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "retry: 3000\n\n")
 	f.Flush()
 
+	rc := http.NewResponseController(w)
 	beat := time.NewTicker(heartbeatEvery)
 	defer beat.Stop()
 	for {
+		_ = rc.SetWriteDeadline(time.Now().Add(heartbeatEvery + writeTimeout)) // unsupported on some writers: then no deadline
 		select {
 		case <-r.Context().Done():
 			return

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -193,7 +194,7 @@ func TestTheLinkSetsAHardenedCookieAndHidesTheToken(t *testing.T) {
 			got = ck
 		}
 	}
-	if got == nil || !got.HttpOnly || got.SameSite != http.SameSiteStrictMode || got.Secure {
+	if got == nil || !got.HttpOnly || got.SameSite != http.SameSiteLaxMode || got.Secure {
 		t.Fatalf("cookie = %+v", got)
 	}
 	if strings.Contains(got.Value, r.tok) {
@@ -363,5 +364,40 @@ func TestErrorsMapToStatuses(t *testing.T) {
 	res, body := do(t, c, "POST", r.srv.URL+"/api/query", `{"sql":"select 1"}`, post)
 	if res.StatusCode != http.StatusOK || !strings.Contains(body, "tableflow") {
 		t.Errorf("query: %d %s", res.StatusCode, body)
+	}
+}
+
+func TestUnknownAPIPathsAre404NotTheAppPage(t *testing.T) {
+	r := newRig(t, nil)
+	c := r.signedIn(t)
+	res, body := do(t, c, "GET", r.srv.URL+"/api/nope", "", nil)
+	if res.StatusCode != http.StatusNotFound || !strings.Contains(body, `"error"`) {
+		t.Fatalf("%d %q", res.StatusCode, body)
+	}
+}
+
+func TestASlowSubscriberIsDisconnectedSoItReloadsItsState(t *testing.T) {
+	h := newHub()
+	events, cancel := h.subscribe()
+	defer cancel()
+	for i := 0; i < 200; i++ { // more than the buffer holds, with nobody reading
+		h.publish("log", i)
+	}
+	drained := 0
+	for range events { // the channel must end, which ends the SSE handler
+		drained++
+	}
+	if drained == 0 || drained > 128 {
+		t.Errorf("drained %d events", drained)
+	}
+	cancel() // ending a subscription the hub already ended must not panic
+}
+
+func TestSetupIsRefusedOnceTheServiceIsClosing(t *testing.T) {
+	r := newRig(t, nil)
+	r.svc.Start(context.Background())
+	r.svc.Close(5 * time.Second)
+	if err := r.svc.Setup(); !errors.Is(err, pipeline.ErrClosed) {
+		t.Fatalf("err = %v, want ErrClosed", err)
 	}
 }

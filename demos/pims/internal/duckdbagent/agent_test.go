@@ -161,3 +161,17 @@ func TestReady(t *testing.T) {
 		t.Fatal("want an error from a dead agent")
 	}
 }
+
+func TestDuckDBDoesNotInheritTheAgentToken(t *testing.T) {
+	t.Setenv("PIMS_AGENT_TOKEN", token)
+	t.Setenv("SOME_OTHER_SETTING", "kept")
+	fakeDuckDB(t, `echo "token=[$PIMS_AGENT_TOKEN] other=[$SOME_OTHER_SETTING]"`)
+	c := newPair(t)
+	out, err := c.ExecLimit(context.Background(), "duckdb", strings.NewReader(""), nil, 1000, "bash", "-c", "set -o pipefail; timeout --signal=KILL 30s duckdb -batch -bail | head -c 1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(out)) != "token=[] other=[kept]" {
+		t.Fatalf("DuckDB saw %q", out)
+	}
+}

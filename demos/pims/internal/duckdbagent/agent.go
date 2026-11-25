@@ -4,8 +4,10 @@
 // The agent runs in the DuckDB container. The client has the same method as
 // compose.Project.ExecLimit, so query.Runner uses either.
 //
-// The agent is not a remote shell. It runs one command, the pipeline that
-// query.Runner builds, and refuses anything else.
+// The agent runs one command, the pipeline that query.Runner builds, and refuses any
+// other. What it does not do is judge the SQL on stdin: DuckDB's shell commands, such as
+// .shell, are rejected by query.Runner, not here. So the token is what keeps the DuckDB
+// container's shell from a caller, and only the server holds it.
 package duckdbagent
 
 import (
@@ -17,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -102,6 +105,8 @@ func run(ctx context.Context, req Request) Response {
 	stderr := &prefix{max: maxStderr}
 	cmd := exec.CommandContext(ctx, req.Cmd[0], req.Cmd[1:]...)
 	cmd.Stdin = strings.NewReader(req.Stdin)
+	// The SQL runs with the agent's environment otherwise, and DuckDB can read it.
+	cmd.Env = withoutAgentToken(os.Environ())
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// A client that gives up, or output past the limit, must end the whole pipeline.
 	// Killing only bash would leave DuckDB running until its own time limit.
@@ -155,4 +160,14 @@ func (p *prefix) Write(b []byte) (int, error) {
 		p.buf.Write(b[:min(len(b), room)])
 	}
 	return len(b), nil
+}
+
+func withoutAgentToken(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, "PIMS_AGENT_TOKEN=") {
+			out = append(out, e)
+		}
+	}
+	return out
 }

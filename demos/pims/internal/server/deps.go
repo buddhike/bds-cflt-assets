@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pims/internal/compose"
@@ -64,6 +65,8 @@ func NewDeps(cfg Config, signal TableflowSignal, log *slog.Logger) (pipeline.Dep
 		return pipeline.Deps{}, fmt.Errorf("connect url: %w", err)
 	}
 
+	generation := newGenerationSource(log)
+
 	return pipeline.Deps{
 		Titles:      Titles,
 		CheckDocker: func(context.Context) error { return nil }, // LoadConfig checked everything
@@ -85,11 +88,15 @@ func NewDeps(cfg Config, signal TableflowSignal, log *slog.Logger) (pipeline.Dep
 			if err := waitForServices(ctx, cfg, agent, connectBase, log); err != nil {
 				return compose.MySQLSecrets{}, err
 			}
+			gen, err := generation.Get(ctx)
+			if err != nil {
+				return compose.MySQLSecrets{}, err
+			}
 			return compose.MySQLSecrets{
 				RootPassword:     cfg.MySQLRootPassword,
 				AppPassword:      cfg.MySQLAppPassword,
 				DebeziumPassword: cfg.MySQLDebeziumPassword,
-				Generation:       Generation(ctx, log),
+				Generation:       gen,
 			}, nil
 		},
 		StopLocal: func(context.Context, bool) error { return ErrManaged },
@@ -162,22 +169,36 @@ func loopbackURL(raw string) (string, error) {
 	return strings.TrimRight(raw, "/"), nil
 }
 
+// ErrSignalDenied is returned when the task may not read the Tableflow parameter. Waiting
+// longer cannot fix that.
+var ErrSignalDenied = errors.New("not allowed to read the Tableflow signal")
+
+// logEvery is how many polls pass between repeats of the same message, so a long wait does
+// not fill the UI's log history.
+const logEvery = 6
+
 // waitForSignal polls until Terraform has enabled Tableflow.
 func waitForSignal(ctx context.Context, s TableflowSignal, every, limit time.Duration, log *slog.Logger) error {
 	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	t := time.NewTicker(every)
 	defer t.Stop()
-	for {
+	for poll := 0; ; poll++ {
 		on, err := s.Enabled(ctx)
 		switch {
+		case errors.Is(err, ErrSignalDenied):
+			return err
 		case err != nil:
-			log.Warn("Could not check whether Tableflow is enabled", "error", err)
+			if poll%logEvery == 0 {
+				log.Warn("Could not check whether Tableflow is enabled", "error", err)
+			}
 		case on:
 			log.Info("Tableflow has been enabled")
 			return nil
 		default:
-			log.Info("Waiting for Launchpad to enable Tableflow")
+			if poll%logEvery == 0 {
+				log.Info("Waiting for Launchpad to enable Tableflow")
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -193,13 +214,13 @@ func waitForServices(ctx context.Context, cfg Config, agent *duckdbagent.Client,
 	wait := func(name string, check func(context.Context) error) error {
 		p.OnRetry = func(attempt int, err error, wait time.Duration) {
 			if attempt%5 == 1 {
-				log.Info("Waiting for "+name, "attempt", attempt, "error", err)
+				log.Info("Waiting for a service", "service", name, "attempt", attempt, "error", err)
 			}
 		}
 		if err := retry.Do(ctx, p, check); err != nil {
 			return fmt.Errorf("wait for %s: %w", name, err)
 		}
-		log.Info(name + " is up")
+		log.Info("Service is up", "service", name)
 		return nil
 	}
 	if err := wait("MySQL", func(ctx context.Context) error {
@@ -234,21 +255,54 @@ func waitForServices(ctx context.Context, cfg Config, agent *duckdbagent.Client,
 
 var generationPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
 
-// Generation identifies this MySQL instance for Debezium. MySQL's data lives on
-// the task's ephemeral storage, so a database is as old as its task: the ECS
-// task id is the generation. A server container restarted inside the same task
-// then keeps the connector it already has, and a replacement task, which starts
-// with an empty database, gets a connector of its own and a new schema history
-// topic. Anywhere else a random one is used.
-func Generation(ctx context.Context, log *slog.Logger) string {
-	if g, err := taskGeneration(ctx, os.Getenv); err == nil {
-		return g
-	} else if err != errNoMetadata {
-		log.Warn("Could not read the ECS task id, using a random generation", "error", err)
+// generationSource decides the MySQL generation once and keeps it. Setup can run again,
+// for example from Retry setup, and a different answer then would start a second Debezium
+// connector next to the first, on a database that already has its schema.
+type generationSource struct {
+	mu    sync.Mutex
+	value string
+	log   *slog.Logger
+	// lookup reads the ECS task id; replaced in tests.
+	lookup func(context.Context) (string, error)
+}
+
+func newGenerationSource(log *slog.Logger) *generationSource {
+	return &generationSource{log: log, lookup: func(ctx context.Context) (string, error) { return taskGeneration(ctx, os.Getenv) }}
+}
+
+// Get returns the generation. MySQL's data is on the task's ephemeral storage, so a
+// database is as old as its task: the ECS task id is the generation. A server container
+// restarted inside the same task then keeps the connector it already has, and a replacement
+// task, which starts with an empty database, gets a connector of its own and a new schema
+// history topic. Inside ECS a failed lookup is an error, never a guess. Anywhere else a
+// random one is used.
+func (g *generationSource) Get(ctx context.Context) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.value != "" {
+		return g.value, nil
 	}
-	b := make([]byte, 6)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	p := retry.Policy{Attempts: 5, Initial: time.Second, Max: 5 * time.Second}
+	var id string
+	err := retry.Do(ctx, p, func(ctx context.Context) (err error) {
+		id, err = g.lookup(ctx)
+		if errors.Is(err, errNoMetadata) {
+			return retry.Permanent(err)
+		}
+		return err
+	})
+	switch {
+	case err == nil:
+		g.value = id
+	case errors.Is(err, errNoMetadata):
+		b := make([]byte, 6)
+		_, _ = rand.Read(b)
+		g.value = hex.EncodeToString(b)
+	default:
+		return "", fmt.Errorf("read the ECS task id: %w", err)
+	}
+	g.log.Info("MySQL generation chosen", "generation", g.value)
+	return g.value, nil
 }
 
 var errNoMetadata = errors.New("not running in ECS")

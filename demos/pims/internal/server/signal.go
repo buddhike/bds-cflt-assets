@@ -10,6 +10,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/aws/smithy-go"
 )
 
 // TableflowSignal tells the server whether Terraform has enabled Tableflow.
@@ -42,6 +43,10 @@ func (s *SSMSignal) Enabled(ctx context.Context) (bool, error) {
 		var missing *ssmtypes.ParameterNotFound
 		if errors.As(err, &missing) {
 			return false, nil
+		}
+		var api smithy.APIError
+		if errors.As(err, &api) && api.ErrorCode() == "AccessDeniedException" {
+			return false, fmt.Errorf("%w: %v", ErrSignalDenied, err)
 		}
 		return false, fmt.Errorf("read SSM parameter %s: %w", s.name, err)
 	}

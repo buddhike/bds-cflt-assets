@@ -62,6 +62,9 @@ type Service struct {
 	latency   latency.Result
 	busy      string
 	lastError string
+	// closing is set by Close. Setup then refuses to start, so it cannot add to wg while
+	// Close waits on it.
+	closing bool
 }
 
 // New builds the service. base receives the log records, which also go to the UI.
@@ -118,6 +121,7 @@ func (s *Service) Start(ctx context.Context) {
 // Close stops background work, waiting up to grace for it to react.
 func (s *Service) Close(grace time.Duration) {
 	s.mu.Lock()
+	s.closing = true
 	cancel := s.cancel
 	s.mu.Unlock()
 	if cancel != nil {
@@ -167,6 +171,10 @@ func (s *Service) Setup() error {
 	if s.ctx == nil {
 		s.mu.Unlock()
 		return ErrNotStarted
+	}
+	if s.closing {
+		s.mu.Unlock()
+		return pipeline.ErrClosed
 	}
 	if s.busy != "" {
 		s.mu.Unlock()

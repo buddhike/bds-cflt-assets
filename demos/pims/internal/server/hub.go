@@ -11,8 +11,9 @@ type event struct {
 	data []byte
 }
 
-// hub fans events out to the open browser tabs. A tab that cannot keep up loses
-// events rather than slowing the others: the UI reloads its state on reconnect.
+// hub fans events out to the open browser tabs. A tab that cannot keep up is
+// disconnected rather than slowing the others or silently missing events: its
+// stream ends, the browser reconnects, and the UI reloads its state.
 type hub struct {
 	mu     sync.Mutex
 	subs   map[chan event]struct{}
@@ -52,7 +53,9 @@ func (h *hub) publish(name string, v any) {
 	for ch := range h.subs {
 		select {
 		case ch <- event{name, data}:
-		default: // a slow tab
+		default: // a slow tab: end its stream
+			delete(h.subs, ch)
+			close(ch)
 		}
 	}
 }

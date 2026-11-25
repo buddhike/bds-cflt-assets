@@ -25,8 +25,9 @@ import (
 	"pims/internal/server"
 )
 
-// ECS sends SIGTERM and kills the task after 30 seconds by default.
-const shutdownGrace = 20 * time.Second
+// ECS sends SIGTERM and kills the task after 30 seconds by default. Stopping the service
+// and then the HTTP server each get this long, so together they fit.
+const shutdownGrace = 10 * time.Second
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -89,9 +90,14 @@ func runAgent(ctx context.Context, log *slog.Logger, getenv func(string) string)
 	if err := requireLoopback(addr); err != nil {
 		return err
 	}
+	token := getenv("PIMS_AGENT_TOKEN")
+	if len(token) < 16 {
+		// Without one the agent would refuse every request, and the server would still report it as up.
+		return errors.New("PIMS_AGENT_TOKEN must be set to at least 16 characters")
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           duckdbagent.Handler(getenv("PIMS_AGENT_TOKEN"), log),
+		Handler:           duckdbagent.Handler(token, log),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Info("DuckDB agent listening", "addr", addr)

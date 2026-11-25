@@ -196,11 +196,55 @@ func TestGenerationRejectsAnUnexpectedARN(t *testing.T) {
 	}
 }
 
-func TestGenerationFallsBackToARandomOneThatIsValidForConnectorNames(t *testing.T) {
+func TestGenerationIsDecidedOncePerProcess(t *testing.T) {
+	calls := 0
+	g := newGenerationSource(quiet)
+	g.lookup = func(context.Context) (string, error) {
+		calls++
+		if calls == 1 {
+			return "3fa9c1d2e4b6", nil
+		}
+		return "ffffffffffff", nil // what a later lookup would say
+	}
+	a, _ := g.Get(context.Background())
+	b, _ := g.Get(context.Background())
+	if a != "3fa9c1d2e4b6" || a != b || calls != 1 {
+		t.Errorf("generations %q and %q after %d lookups", a, b, calls)
+	}
+}
+
+func TestInsideECSAFailedLookupIsAnErrorNotARandomGeneration(t *testing.T) {
+	g := newGenerationSource(quiet)
+	g.lookup = func(context.Context) (string, error) { return "", errors.New("metadata endpoint down") }
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if got, err := g.Get(ctx); err == nil {
+		t.Fatalf("got generation %q, want an error", got)
+	}
+	// And once the endpoint recovers, the next call succeeds and is then fixed.
+	g.lookup = func(context.Context) (string, error) { return "3fa9c1d2e4b6", nil }
+	if got, err := g.Get(context.Background()); err != nil || got != "3fa9c1d2e4b6" {
+		t.Errorf("after recovery: %q, %v", got, err)
+	}
+}
+
+func TestOutsideECSTheGenerationIsRandomButValidForConnectorNames(t *testing.T) {
 	t.Setenv("ECS_CONTAINER_METADATA_URI_V4", "")
-	a, b := Generation(context.Background(), quiet), Generation(context.Background(), quiet)
+	a, err := newGenerationSource(quiet).Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newGenerationSource(quiet).Get(context.Background())
 	if !generationPattern.MatchString(a) || a == b {
 		t.Errorf("generations %q and %q", a, b)
+	}
+}
+
+func TestWaitForSignalGivesUpAtOnceWhenAccessIsDenied(t *testing.T) {
+	s := &fakeSignal{err: ErrSignalDenied}
+	err := waitForSignal(context.Background(), s, time.Millisecond, time.Minute, quiet)
+	if !errors.Is(err, ErrSignalDenied) || s.calls.Load() != 1 {
+		t.Fatalf("err = %v after %d calls", err, s.calls.Load())
 	}
 }
 
