@@ -20,6 +20,36 @@ Debezium and Confluent Cloud Tableflow.
 > xattr -dr com.apple.quarantine pims.app
 > ```
 
+## Run it with Launchpad
+
+Instead of the desktop app, PIMS can run in AWS as a [Launchpad](../launchpad/README.md)
+demo. Launch it from Launchpad, which deploys `tf/` with your Confluent Cloud
+key, and open the link it shows. The same UI runs in the browser.
+
+One ECS Fargate task runs four containers behind an Application Load Balancer:
+the Go server (simulator, UI and API in one binary), MySQL, Kafka Connect with
+Debezium, and DuckDB with a small agent that runs the SQL window's queries. How
+the parts fit, and the order Terraform and the server set things up in, is in
+[docs/specs/launchpad.md](docs/specs/launchpad.md).
+
+* The images are built by `.github/workflows/pims-images.yml` and published to
+  `ghcr.io/<owner>/pims-server`, `pims-duckdb` and `pims-connect`. GitHub creates
+  packages as private, so make each one public once, or give Terraform a
+  registry secret (`registry_credentials_secret_arn`).
+* `latest` is published from the default branch. Launchpad passes a demo only
+  its standard variables, so `image_tag` is whatever default `tf/variables.tf`
+  has. To launch the images of an unmerged branch, set that default to the branch
+  name (the workflow tags each push with its branch and commit) on that branch,
+  and point the stack's `DemosRef` at it.
+* The link carries a random access token, and the load balancer speaks plain
+  HTTP. Set `allowed_cidr_blocks` to your own address range for anything but a
+  short demo.
+* MySQL's data is on the task's own storage, so it is lost if the task is
+  replaced. Tear the demo down from Launchpad, not from the UI.
+
+Before launching, check that the Terraform renders: `cd tf && terraform init
+-backend=false && terraform test` uses mock providers and needs no account.
+
 ## How the clinic works
 
 PIMS models a busy outpatient clinic with General Practice, Paediatrics,
