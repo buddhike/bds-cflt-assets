@@ -2,14 +2,13 @@
 #
 # Builds Launchpad and deploys it as a CloudFormation stack.
 #
-#   scripts/deploy.sh --stack-prefix acme --sender-email launchpad@example.com
+#   scripts/deploy.sh --stack-prefix acme
 #
-# Options (all but the first two are optional):
+# Options (all but the first are optional):
 #   --stack-prefix PREFIX    Required. Starts the name of every stack the script makes, so
 #                            several Launchpads can share an account: acme-launchpad and
 #                            acme-launchpad-artifacts. Lower case letters, digits and
 #                            hyphens, starting with a letter, at most 20 characters.
-#   --sender-email ADDRESS   Where sign-in codes come from. Must be a verified SES identity.
 #   --artifact-bucket NAME   An existing S3 bucket for the Lambda code and the web build.
 #                            Default: a bucket that the script creates in its own stack,
 #                            <stack>-artifacts (see artifacts.yaml).
@@ -29,13 +28,11 @@ stack=launchpad
 prefix=
 region=${AWS_REGION:-${AWS_DEFAULT_REGION:-}}
 bucket=
-sender=
 params=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --artifact-bucket) bucket=$2; shift 2 ;;
-    --sender-email) sender=$2; shift 2 ;;
     --stack-prefix) prefix=$2; shift 2 ;;
     --stack) stack=$2; shift 2 ;;
     --region) region=$2; shift 2 ;;
@@ -44,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[[ -n $prefix && -n $sender ]] || { echo "--stack-prefix and --sender-email are required (see --help)" >&2; exit 2; }
+[[ -n $prefix ]] || { echo "--stack-prefix is required (see --help)" >&2; exit 2; }
 [[ $prefix =~ ^[a-z][a-z0-9-]{0,19}$ ]] || { echo "--stack-prefix must be lower case letters, digits and hyphens, start with a letter, and have at most 20 characters" >&2; exit 2; }
 stack=$prefix-$stack
 # The name is part of the Lambda function names, which AWS limits to 64 characters.
@@ -89,7 +86,6 @@ aws cloudformation package \
   --output-template-file "$build/packaged.yaml" >/dev/null
 
 overrides=(
-  "SenderEmail=$sender"
   "FrontendArtifactBucket=$bucket"
   "FrontendArtifactKey=$frontend_key"
 )
@@ -110,5 +106,13 @@ echo
 aws cloudformation describe-stacks --stack-name "$stack" \
   --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text
 echo
-echo "If SES is in its sandbox, verify the address in the email AWS sent to $sender,"
-echo "and verify each address that will sign in, or ask AWS to lift the sandbox."
+secret=$(aws cloudformation describe-stacks --stack-name "$stack" \
+  --query "Stacks[0].Outputs[?OutputKey=='SignInSecretArn'].OutputValue" --output text)
+echo "Sign-in codes are texted to the number in the secret SignInSecretArn. It holds a"
+echo "placeholder until you set it, and nobody can sign in before then:"
+echo
+echo "  aws secretsmanager put-secret-value --region $region --secret-id $secret \\"
+echo "    --secret-string '+61400000000'    # your number, in E.164 form"
+echo
+echo "While the SNS SMS sandbox is on, that number must be verified in SNS first"
+echo "(console: End User Messaging > SMS sandbox, or ask AWS for production access)."

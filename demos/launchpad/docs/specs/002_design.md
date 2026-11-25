@@ -9,8 +9,9 @@ segments of the build follow.
 |---|---|---|
 | Deployment tool | Terraform. The CloudFormation wording in the overview (lines 8-10) is superseded by lines 20-22. | The later lines are specific and the PIMS demo is Terraform. |
 | Where demos live | `DemosPath` stack parameter, default `demos`. A demo is a direct sub directory that has a `tf/` directory. | PIMS lives in `demos/pims`. Set `DemosPath=launchpad-demos` to follow the overview literally. |
-| One instance per demo | A demo has one deployment, shared by every approved user. | Terraform state is per demo, not per user. |
-| Sign up and sign in | One passwordless flow: email, then OTP. | The overview has OTP only. The first verified OTP creates the user. |
+| One instance per demo | A demo has one deployment. | Terraform state is per demo, not per user. |
+| Who signs in | One person, the owner (`SuperUserEmail`). The overview's registration and review list are not built. | The code goes to one phone number, so only its holder can sign in. |
+| Sign in | A one-time code texted through SNS to the number in a Secrets Manager secret. No address is typed. | SES mail from a `confluent.io` address was dropped by the recipient's DMARC policy, `p=reject`. The overview's emailed OTP and `@confluent.io` registration are superseded. |
 | Credentials store | KMS encrypted blob in DynamoDB. | The overview says DynamoDB for storage. KMS keeps the secret off the page and out of backups in plain text. |
 | Terraform compute | Lambda, container-less. The binary is downloaded to `/tmp`, checksum pinned. A run that hits the Lambda time limit is interrupted and resumed by a new invocation. | The overview says Lambda for compute. Terraform is idempotent, so resuming is safe. |
 | Front end hosting | S3 + CloudFront. `/api/*` goes to an HTTP API. | Serverless, one origin, so no CORS. |
@@ -20,7 +21,7 @@ segments of the build follow.
 ```
 Browser ── CloudFront ──┬── S3 (React build)
                         └── /api/* ── HTTP API ── Lambda api ──┬── DynamoDB (single table)
-                                                               ├── SES (OTP email)
+                                                               ├── SNS (OTP text) + Secrets Manager (the number)
                                                                ├── KMS (credentials)
                                                                └── async invoke ── Lambda runner
                                                                                      ├── GitHub (demo source, read only)
@@ -36,9 +37,9 @@ Everything a demo creates carries `launchpad:managed=true` and
 
 | pk | sk | Attributes |
 |---|---|---|
-| `USER#<email>` | `PROFILE` | `status` (`pending`/`approved`/`denied`), `role` (`admin`/`user`), `createdAt`, `decidedBy`, `decidedAt`, `gsi1pk`=`STATUS#<status>`, `gsi1sk`=`createdAt` |
+| `USER#<email>` | `PROFILE` | `role` (`admin`), `createdAt`. Only the owner has one |
 | `USER#<email>` | `CREDS` | `ciphertext` (KMS), `apiKeyHint` (last 4), `updatedAt` |
-| `OTP#<email>` | `OTP` | `salt`, `hash`, `attempts`, `sentAt`, `hourStart`, `hourCount`, `ttl` |
+| `OTP#owner` | `OTP` | `salt`, `hash`, `attempts`, `sentAt`, `hourStart`, `hourCount`, `ttl` |
 | `SESSION#<sha256 token>` | `SESSION` | `email`, `ttl` |
 | `CATALOG` | `DEMO#<id>` | `name`, `description`, `path`, `ref`, `needsConfluent` |
 | `CATALOG` | `META` | `refreshedAt`, `ref` |
@@ -49,16 +50,19 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 
 ## Sign in
 
-1. `POST /api/auth/start {email}`: the domain must be `AllowedEmailDomain`.
-   Sends a 6 digit OTP by SES. The same `202` is returned whether or not the
-   user exists. Limits: 30 s between sends, 10 per hour.
-2. `POST /api/auth/verify {email, otp}`: the OTP is valid for 10 minutes and 5
+1. `POST /api/auth/start {resend?}`: the page calls this when it has no
+   session. It reads the phone number from the secret `SIGN_IN_SECRET` (E.164, as
+   a plain string or a one-entry JSON object), makes a 6 digit OTP and publishes
+   it to that number with SNS, as a transactional message. The request cannot
+   name a destination. Answers `202 {sent}`. If an earlier code is still good
+   (10 minutes, fewer than 5 guesses) nothing is sent and `sent` is `false`, so a
+   reload, or anyone else, cannot replace the code on the owner's phone.
+   `resend: true` sends a new one. Limits: 30 s between sends, 10 per hour. A
+   missing or malformed secret is `503` and uses up no send.
+2. `POST /api/auth/verify {otp}`: the OTP is valid for 10 minutes and 5
    guesses. Stored as `HMAC-SHA256(salt, otp)`, compared in constant time.
-   On success:
-   * no user yet and email equals `SuperUserEmail`: create `approved` `admin`.
-   * no user yet otherwise: create `pending` `user`.
-   * a session is created only for `approved` users. A `pending` or `denied`
-     user is told their state and gets no session.
+   On success the owner's profile is created if it is missing (`admin`) and a
+   session is created for `SuperUserEmail`.
 3. The session is an opaque 32 byte token in an `HttpOnly; Secure;
    SameSite=Strict` cookie. Only its hash is stored. Mutating calls also
    require the `X-Launchpad: 1` header.
@@ -69,9 +73,6 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 |---|---|---|
 | `POST /api/auth/start`, `/api/auth/verify`, `/api/auth/logout` | anyone | sign in |
 | `GET /api/me` | session | the user, and whether credentials are saved |
-| `GET /api/admin/requests` | admin | pending users |
-| `GET /api/admin/users` | admin | every user |
-| `POST /api/admin/users/{email}/approve`, `/deny` | admin | decide |
 | `GET/PUT/DELETE /api/credentials` | session | Confluent Cloud key. `GET` never returns the secret |
 | `GET /api/demos` | session | catalog merged with each demo's state |
 | `POST /api/demos/refresh` | admin | re-read the repository now |
@@ -134,7 +135,7 @@ Both Lambdas emit CloudWatch Embedded Metric Format lines in the `Launchpad`
 namespace (`SignInStarted`, `SignInFailed`, `UserRegistered`,
 `DemoLaunchRequested`, `DemoLaunchSucceeded`, `DemoLaunchFailed`,
 `DemoTeardownRequested`, `TerraformSeconds`). The CloudFormation template
-creates one dashboard with those, plus Lambda, HTTP API, DynamoDB, SES and
+creates one dashboard with those, plus Lambda, HTTP API, DynamoDB, SNS text messages and
 CloudFront health.
 
 ## Build order

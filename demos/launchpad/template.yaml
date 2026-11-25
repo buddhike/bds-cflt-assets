@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Launchpad: launches demos into this AWS account with Terraform. Serverless
-  only: Lambda, DynamoDB, SES, S3, CloudFront and API Gateway.
+  only: Lambda, DynamoDB, SNS, Secrets Manager, S3, CloudFront and API Gateway.
 
 # Deploy with scripts/deploy.sh, which builds the code and the React app,
 # uploads them and runs `aws cloudformation deploy`.
@@ -10,19 +10,7 @@ Parameters:
   SuperUserEmail:
     Type: String
     Default: bdesilva@confluent.io
-    Description: The address that becomes the super user on its first sign-in. Everybody else waits for approval.
-  AllowedEmailDomain:
-    Type: String
-    Default: confluent.io
-    Description: Only addresses at this domain can register.
-  SenderEmail:
-    Type: String
-    Description: The address sign-in codes are sent from. It must be a verified SES identity.
-  CreateSesIdentity:
-    Type: String
-    AllowedValues: ["true", "false"]
-    Default: "true"
-    Description: Create the SES identity for SenderEmail. Use false if the address or its domain is already verified in this account and region.
+    Description: The one person who can sign in. Their address names their saved credentials and the demos they launch. The code goes to the phone number in the sign-in secret.
   DemosRepo:
     Type: String
     Default: buddhike/bds-cflt-assets
@@ -56,9 +44,6 @@ Parameters:
   FrontendArtifactKey:
     Type: String
     Description: The key of the zipped React build. Set by scripts/deploy.sh.
-
-Conditions:
-  MakeSesIdentity: !Equals [!Ref CreateSesIdentity, "true"]
 
 Resources:
   # ---------------------------------------------------------------- data
@@ -132,16 +117,20 @@ Resources:
             Resource: [!GetAtt StateBucket.Arn, !Sub "${StateBucket.Arn}/*"]
             Condition: { Bool: { "aws:SecureTransport": "false" } }
 
-  SesIdentity:
-    Type: AWS::SES::EmailIdentity
-    Condition: MakeSesIdentity
-    # Deleting the stack deletes the identity. This is the default, stated so that
-    # nobody adds a Retain by accident. With CreateSesIdentity=false the stack
-    # never owns an identity, so it deletes none.
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+  # The phone number sign-in codes are texted to. It is the only destination the
+  # code ever uses: nothing in a request can change it. The value below is a
+  # placeholder. Replace it after the deploy:
+  #   aws secretsmanager put-secret-value --secret-id <SignInSecretArn> --secret-string +61400000000
+  # Later deploys leave the value alone, because CloudFormation writes it only
+  # when this property changes. It has no fixed name, so deleting the stack
+  # never collides with a secret that is waiting out its recovery window.
+  SignInSecret:
+    Type: AWS::SecretsManager::Secret
     Properties:
-      EmailIdentity: !Ref SenderEmail
+      Description: The phone number, in E.164 form such as +61400000000, that Launchpad texts sign-in codes to.
+      SecretString: REPLACE_WITH_A_PHONE_NUMBER
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
 
   # ---------------------------------------------------------------- compute
   ApiLogs:
@@ -181,9 +170,17 @@ Resources:
                 Action: kms:Encrypt
                 Resource: !GetAtt Key.Arn
               - Effect: Allow
-                Action: ses:SendEmail
-                Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
-                Condition: { StringEquals: { "ses:FromAddress": !Ref SenderEmail } }
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SignInSecret
+              # Publishing to a phone number cannot be limited to one number in IAM.
+              # The code sends only to the number in the secret, and this denies the
+              # other thing sns:Publish does, which is publishing to a topic.
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: "*"
+              - Effect: Deny
+                Action: sns:Publish
+                Resource: !Sub arn:${AWS::Partition}:sns:*:*:*
               - Effect: Allow
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt Runner.Arn
@@ -238,8 +235,7 @@ Resources:
           TABLE_NAME: !Ref Table
           KMS_KEY_ID: !Ref Key
           SUPER_USER_EMAIL: !Ref SuperUserEmail
-          ALLOWED_EMAIL_DOMAIN: !Ref AllowedEmailDomain
-          SENDER_EMAIL: !Ref SenderEmail
+          SIGN_IN_SECRET: !Ref SignInSecret
           DEMOS_REPO: !Ref DemosRepo
           DEMOS_PATH: !Ref DemosPath
           DEMOS_REF: !Ref DemosRef
@@ -268,7 +264,6 @@ Resources:
           KMS_KEY_ID: !Ref Key
           STATE_BUCKET: !Ref StateBucket
           SUPER_USER_EMAIL: !Ref SuperUserEmail
-          ALLOWED_EMAIL_DOMAIN: !Ref AllowedEmailDomain
           DEMOS_REPO: !Ref DemosRepo
           DEMOS_PATH: !Ref DemosPath
           DEMOS_REF: !Ref DemosRef
@@ -542,8 +537,7 @@ Resources:
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoTeardownFailed\"', 'Sum', 300)","label":"teardown failed","id":"e5"}]
             ]}},
             {"type":"metric","x":12,"y":2,"width":12,"height":6,"properties":{"title":"Sign-ins","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
-              ["Launchpad","SignInStarted"],["Launchpad","SignInSucceeded"],["Launchpad","SignInFailed"],["Launchpad","CredentialsSaved"],
-              [{"expression":"SEARCH('{Launchpad,status} MetricName=\"UserRegistered\"', 'Sum', 300)","label":"registered","id":"e6"}]
+              ["Launchpad","SignInStarted"],["Launchpad","SignInSucceeded"],["Launchpad","SignInFailed"],["Launchpad","CredentialsSaved"]
             ]}},
             {"type":"metric","x":0,"y":8,"width":12,"height":6,"properties":{"title":"Terraform run time (seconds)","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
               [{"expression":"SEARCH('{Launchpad,action} MetricName=\"TerraformSeconds\"', 'Maximum', 300)","label":"longest","id":"e7"}]
@@ -571,8 +565,9 @@ Resources:
               ["AWS/DynamoDB","ThrottledRequests","TableName","${Table}"],
               ["AWS/DynamoDB","SystemErrors","TableName","${Table}"]
             ]}},
-            {"type":"metric","x":0,"y":26,"width":12,"height":6,"properties":{"title":"SES sign-in email","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
-              ["AWS/SES","Send"],["AWS/SES","Bounce"],["AWS/SES","Complaint"],["AWS/SES","Reject"]
+            {"type":"metric","x":0,"y":26,"width":12,"height":6,"properties":{"title":"Sign-in text messages","region":"${AWS::Region}","stat":"Average","period":300,"view":"timeSeries","metrics":[
+              ["AWS/SNS","SMSSuccessRate"],
+              ["AWS/SNS","SMSMonthToDateSpentUSD",{"stat":"Maximum","yAxis":"right"}]
             ]}},
             {"type":"metric","x":12,"y":26,"width":12,"height":6,"properties":{"title":"CloudFront","region":"us-east-1","period":300,"view":"timeSeries","metrics":[
               ["AWS/CloudFront","Requests","DistributionId","${Distribution}","Region","Global",{"stat":"Sum"}],
@@ -587,6 +582,9 @@ Outputs:
     Value: !Sub https://${Distribution.DomainName}
   DashboardUrl:
     Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AWS::StackName}
+  SignInSecretArn:
+    Description: Holds the phone number sign-in codes are texted to. Put your number in it after the first deploy.
+    Value: !Ref SignInSecret
   StateBucketName:
     Description: Holds the Terraform state of every demo. It is kept when the stack is deleted.
     Value: !Ref StateBucket
