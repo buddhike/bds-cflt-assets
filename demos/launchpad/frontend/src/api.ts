@@ -69,8 +69,8 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 export const api = {
   me: () => call<User>('GET', '/me'),
-  /** Text a code to the owner's phone. `resend` asks for a new one while another is still good. */
-  start: (resend: boolean) => call<{sent: boolean}>('POST', '/auth/start', {resend}),
+  /** Always answers that a code was sent, whatever the number is. Only a malformed number is refused. */
+  start: (phone: string) => call<{sent: boolean}>('POST', '/auth/start', {phone}),
   verify: (otp: string) => call<{user: User}>('POST', '/auth/verify', {otp}),
   logout: () => call<{ok: boolean}>('POST', '/auth/logout'),
   demos: () => call<{demos: Demo[]}>('GET', '/demos'),

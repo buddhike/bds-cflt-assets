@@ -1,78 +1,78 @@
-import {FormEvent, useEffect, useRef, useState} from 'react';
-import {api, ApiError, errorText} from '../api';
+import {FormEvent, useState} from 'react';
+import {api, errorText} from '../api';
 
 interface Props {
   onSignedIn: () => void;
 }
 
-type Step = 'sending' | 'code' | 'failed';
-
 /**
- * Whoever arrives without a session is sent a code, by text message, to the
- * number the owner keeps in Secrets Manager. There is no address to type: the
- * page cannot choose where the code goes.
+ * The owner's phone number, then the code texted to it. The page is told the
+ * code was sent whatever the number is, so it cannot be used to find the right
+ * one. If the number is wrong, no code arrives and no code works.
  */
 export function SignIn({onSignedIn}: Props) {
-  const [step, setStep] = useState<Step>('sending');
-  const [note, setNote] = useState('');
+  const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
+  const [step, setStep] = useState<'phone' | 'code'>('phone');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const asked = useRef(false);
 
-  async function requestCode(resend: boolean) {
-    setBusy(true);
-    setError('');
-    setNote('');
-    try {
-      const {sent} = await api.start(resend);
-      setNote(sent ? 'We sent a six digit code to your phone.' : 'A code was sent to your phone a moment ago. Enter it below.');
-      setStep('code');
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'too_soon') {
-        // A code went out in the last half minute, so there is one to enter.
-        setNote('A code was sent to your phone a moment ago. Enter it below.');
-        setStep('code');
-      } else {
-        setError(errorText(err));
-        setStep(resend && step === 'code' ? 'code' : 'failed');
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Once per visit. The ref keeps development's double effect from asking twice.
-  useEffect(() => {
-    if (asked.current) return;
-    asked.current = true;
-    void requestCode(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function verify(e: FormEvent) {
-    e.preventDefault();
+  async function run(fn: () => Promise<void>) {
     setBusy(true);
     setError('');
     try {
-      await api.verify(code);
-      onSignedIn();
+      await fn();
     } catch (err) {
       setError(errorText(err));
-      setCode('');
     } finally {
       setBusy(false);
     }
   }
+
+  const sendCode = (e: FormEvent) => {
+    e.preventDefault();
+    return run(async () => {
+      await api.start(phone);
+      setStep('code');
+    });
+  };
+
+  const verify = (e: FormEvent) => {
+    e.preventDefault();
+    return run(async () => {
+      try {
+        await api.verify(code);
+        onSignedIn();
+      } catch (err) {
+        setCode('');
+        throw err;
+      }
+    });
+  };
 
   return (
     <main className="gate">
       <h1>Launchpad</h1>
       <p className="muted">Launch and tear down demos in AWS.</p>
-      {step === 'sending' && <p className="muted" role="status">Sending a code to your phone…</p>}
-      {step === 'code' && (
+      {step === 'phone' ? (
+        <form onSubmit={sendCode}>
+          <label>
+            Phone number
+            <input
+              type="tel"
+              autoComplete="tel"
+              autoFocus
+              required
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+61400000000"
+            />
+          </label>
+          <button className="primary" disabled={busy}>{busy ? 'Sending…' : 'Text me a code'}</button>
+        </form>
+      ) : (
         <form onSubmit={verify}>
-          <p>{note}</p>
+          <p>We sent a six digit code to <strong>{phone}</strong>.</p>
           <label>
             Code
             <input
@@ -88,13 +88,12 @@ export function SignIn({onSignedIn}: Props) {
           </label>
           <div className="row">
             <button className="primary" disabled={busy || code.length !== 6}>{busy ? 'Checking…' : 'Sign in'}</button>
-            <button type="button" disabled={busy} onClick={() => { setCode(''); void requestCode(true); }}>
-              Send a new code
+            <button type="button" disabled={busy} onClick={() => { setStep('phone'); setCode(''); setError(''); }}>
+              Use another number
             </button>
           </div>
         </form>
       )}
-      {step === 'failed' && <button onClick={() => void requestCode(false)} disabled={busy}>Try again</button>}
       {error && <p className="error" role="alert">{error}</p>}
     </main>
   );

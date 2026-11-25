@@ -18,8 +18,6 @@ export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [view, setView] = useState<View>(fromHash);
   const [loadError, setLoadError] = useState('');
-  // After signing out, wait for a click before sending another code to the phone.
-  const [signedOut, setSignedOut] = useState(false);
 
   const loadUser = useCallback(async () => {
     try {
@@ -42,14 +40,6 @@ export default function App() {
 
   if (loadError) return <main className="gate"><p className="error" role="alert">{loadError}</p><button onClick={loadUser}>Retry</button></main>;
   if (user === undefined) return <main className="gate"><p className="muted">Loading…</p></main>;
-  if (user === null && signedOut) {
-    return (
-      <main className="gate">
-        <h1>Signed out</h1>
-        <button className="primary" onClick={() => setSignedOut(false)}>Sign in</button>
-      </main>
-    );
-  }
   if (user === null) return <SignIn onSignedIn={loadUser} />;
 
   const current = view;
@@ -68,7 +58,7 @@ export default function App() {
         </nav>
         <span className="who">
           {user.email}
-          <button className="link" onClick={async () => { await api.logout().catch(() => undefined); setSignedOut(true); setUser(null); }}>Sign out</button>
+          <button className="link" onClick={async () => { await api.logout().catch(() => undefined); setUser(null); }}>Sign out</button>
         </span>
       </header>
       <main className="page">
