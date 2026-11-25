@@ -1,0 +1,584 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Launchpad: launches demos into this AWS account with Terraform. Serverless
+  only: Lambda, DynamoDB, SES, S3, CloudFront and API Gateway.
+
+# Deploy with scripts/deploy.sh, which builds the code and the React app,
+# uploads them and runs `aws cloudformation deploy`.
+
+Parameters:
+  SuperUserEmail:
+    Type: String
+    Default: bdesilva@confluent.io
+    Description: The address that becomes the super user on its first sign-in. Everybody else waits for approval.
+  AllowedEmailDomain:
+    Type: String
+    Default: confluent.io
+    Description: Only addresses at this domain can register.
+  SenderEmail:
+    Type: String
+    Description: The address sign-in codes are sent from. It must be a verified SES identity.
+  CreateSesIdentity:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Create the SES identity for SenderEmail. Use false if the address or its domain is already verified in this account and region.
+  DemosRepo:
+    Type: String
+    Default: buddhike/bds-cflt-assets
+    AllowedPattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+    Description: The GitHub repository (owner/name) the demos are read from.
+  DemosPath:
+    Type: String
+    Default: demos
+    AllowedPattern: ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$
+    Description: The directory in the repository whose sub directories are demos. A demo is a sub directory that has a tf directory.
+  DemosRef:
+    Type: String
+    Default: main
+    AllowedPattern: ^[A-Za-z0-9_./-]{1,200}$
+    Description: The branch or tag the demos are read from.
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Optional read-only GitHub token, for a private repository or to lift the rate limit.
+  DemoDeployPolicyArn:
+    Type: String
+    Default: arn:aws:iam::aws:policy/AdministratorAccess
+    Description: >-
+      The managed policy that lets Terraform create what demos need. The default is
+      broad because demos create IAM roles, networks and load balancers. Replace it
+      with a narrower policy if the demos you run allow it.
+  FrontendArtifactBucket:
+    Type: String
+    Description: The bucket that holds the zipped React build. Set by scripts/deploy.sh.
+  FrontendArtifactKey:
+    Type: String
+    Description: The key of the zipped React build. Set by scripts/deploy.sh.
+
+Conditions:
+  MakeSesIdentity: !Equals [!Ref CreateSesIdentity, "true"]
+
+Resources:
+  # ---------------------------------------------------------------- data
+  Key:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts the Confluent Cloud credentials users save in Launchpad
+      EnableKeyRotation: true
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  KeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${AWS::StackName}-credentials
+      TargetKeyId: !Ref Key
+
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: N }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      SSESpecification: { SSEEnabled: true }
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  # Terraform state of every demo, at demos/<id>/terraform.tfstate. It outlives
+  # the stack: deleting Launchpad must not orphan what a demo created.
+  StateBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration: { Status: Enabled }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  StateBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StateBucket
+      PolicyDocument:
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt StateBucket.Arn, !Sub "${StateBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: MakeSesIdentity
+    Properties:
+      EmailIdentity: !Ref SenderEmail
+
+  # ---------------------------------------------------------------- compute
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-api
+      RetentionInDays: 30
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  RunnerLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-runner
+      RetentionInDays: 30
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: "sts:AssumeRole" }
+      Policies:
+        - PolicyName: launchpad-api
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${ApiLogs.Arn}:*"
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+                Resource: [!GetAtt Table.Arn, !Sub "${Table.Arn}/index/gsi1"]
+              # The API encrypts. Only the runner decrypts.
+              - Effect: Allow
+                Action: kms:Encrypt
+                Resource: !GetAtt Key.Arn
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                Condition: { StringEquals: { "ses:FromAddress": !Ref SenderEmail } }
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt Runner.Arn
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: "sts:AssumeRole" }
+      ManagedPolicyArns: [!Ref DemoDeployPolicyArn]
+      Policies:
+        - PolicyName: launchpad-runner
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${RunnerLogs.Arn}:*"
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+                Resource: [!GetAtt Table.Arn, !Sub "${Table.Arn}/index/gsi1"]
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt Key.Arn
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-runner
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub "${StateBucket.Arn}/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt StateBucket.Arn
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  Api:
+    Type: AWS::Lambda::Function
+    DependsOn: ApiLogs
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-api
+      Runtime: python3.13
+      Handler: launchpad.handlers.api.handler
+      Code: build/backend
+      Role: !GetAtt ApiRole.Arn
+      Timeout: 25
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          KMS_KEY_ID: !Ref Key
+          SUPER_USER_EMAIL: !Ref SuperUserEmail
+          ALLOWED_EMAIL_DOMAIN: !Ref AllowedEmailDomain
+          SENDER_EMAIL: !Ref SenderEmail
+          DEMOS_REPO: !Ref DemosRepo
+          DEMOS_PATH: !Ref DemosPath
+          DEMOS_REF: !Ref DemosRef
+          GITHUB_TOKEN: !Ref GitHubToken
+          RUNNER_FUNCTION: !Sub ${AWS::StackName}-runner
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  # Runs Terraform. It needs room for the binary, providers and plugin cache,
+  # and as long as Lambda allows; the code resumes itself beyond that.
+  Runner:
+    Type: AWS::Lambda::Function
+    DependsOn: RunnerLogs
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-runner
+      Runtime: python3.13
+      Handler: launchpad.handlers.runner.handler
+      Code: build/backend
+      Role: !GetAtt RunnerRole.Arn
+      Timeout: 900
+      MemorySize: 2048
+      EphemeralStorage: { Size: 10240 }
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+          KMS_KEY_ID: !Ref Key
+          STATE_BUCKET: !Ref StateBucket
+          SUPER_USER_EMAIL: !Ref SuperUserEmail
+          ALLOWED_EMAIL_DOMAIN: !Ref AllowedEmailDomain
+          DEMOS_REPO: !Ref DemosRepo
+          DEMOS_PATH: !Ref DemosPath
+          DEMOS_REF: !Ref DemosRef
+          GITHUB_TOKEN: !Ref GitHubToken
+          RUNNER_FUNCTION: !Sub ${AWS::StackName}-runner
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  RunnerRetries:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref Runner
+      Qualifier: $LATEST
+      # A run that fails is recorded and shown. Lambda must not replay it by itself.
+      MaximumRetryAttempts: 0
+
+  # ---------------------------------------------------------------- API
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}
+      ProtocolType: HTTP
+      Tags: { "launchpad:managed": "true" }
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt Api.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 29000
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: $default
+      Target: !Sub integrations/${ApiIntegration}
+
+  # Asking for a code sends an email, so it has its own, lower, limit.
+  SignInRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /api/auth/start
+      Target: !Sub integrations/${ApiIntegration}
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
+      RouteSettings:
+        "POST /api/auth/start":
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 1
+      Tags: { "launchpad:managed": "true" }
+
+  ApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref Api
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  # ---------------------------------------------------------------- web
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Statement:
+          - Sid: CloudFrontReadsTheSite
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt SiteBucket.Arn, !Sub "${SiteBucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  SiteAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-site
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub ${AWS::StackName}-security
+        SecurityHeadersConfig:
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 63072000, IncludeSubdomains: true, Override: true }
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: no-referrer, Override: true }
+          ContentSecurityPolicy:
+            Override: true
+            ContentSecurityPolicy: >-
+              default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+              img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub Launchpad (${AWS::StackName})
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        DefaultRootObject: index.html
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteAccess.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            DomainName: !Sub ${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+            CustomOriginConfig: { OriginProtocolPolicy: https-only, OriginSSLProtocols: [TLSv1.2] }
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+            ResponseHeadersPolicyId: !Ref SecurityHeaders
+
+  # Copies the React build into the site bucket, and empties it on delete.
+  SiteDeployerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: "sts:AssumeRole" }
+      ManagedPolicyArns: [!Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"]
+      Policies:
+        - PolicyName: deploy-site
+          PolicyDocument:
+            Statement:
+              - { Effect: Allow, Action: s3:GetObject, Resource: !Sub "arn:${AWS::Partition}:s3:::${FrontendArtifactBucket}/${FrontendArtifactKey}" }
+              - { Effect: Allow, Action: [s3:PutObject, s3:DeleteObject], Resource: !Sub "${SiteBucket.Arn}/*" }
+              - { Effect: Allow, Action: s3:ListBucket, Resource: !GetAtt SiteBucket.Arn }
+              - { Effect: Allow, Action: cloudfront:CreateInvalidation, Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}" }
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+
+  SiteDeployer:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt SiteDeployerRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Tags:
+        - { Key: "launchpad:managed", Value: "true" }
+      Code:
+        ZipFile: |
+          import io, mimetypes, zipfile, time
+          import boto3
+          import cfnresponse
+
+          s3 = boto3.client("s3")
+          cf = boto3.client("cloudfront")
+
+          def empty(bucket):
+              for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
+                  keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+                  if keys:
+                      s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+
+          def deploy(p):
+              body = s3.get_object(Bucket=p["ArtifactBucket"], Key=p["ArtifactKey"])["Body"].read()
+              wanted = set()
+              with zipfile.ZipFile(io.BytesIO(body)) as z:
+                  for name in z.namelist():
+                      if name.endswith("/") or name.startswith("/") or ".." in name.split("/"):
+                          continue
+                      wanted.add(name)
+                      ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                      # Built files carry a hash in their name. The page that names them must not be cached.
+                      cache = "no-cache" if name == "index.html" else "public, max-age=31536000, immutable"
+                      s3.put_object(Bucket=p["SiteBucket"], Key=name, Body=z.read(name), ContentType=ctype, CacheControl=cache)
+              for page in s3.get_paginator("list_objects_v2").paginate(Bucket=p["SiteBucket"]):
+                  stale = [{"Key": o["Key"]} for o in page.get("Contents", []) if o["Key"] not in wanted]
+                  if stale:
+                      s3.delete_objects(Bucket=p["SiteBucket"], Delete={"Objects": stale})
+              cf.create_invalidation(
+                  DistributionId=p["DistributionId"],
+                  InvalidationBatch={"Paths": {"Quantity": 1, "Items": ["/*"]}, "CallerReference": str(time.time())},
+              )
+
+          def handler(event, context):
+              p = event["ResourceProperties"]
+              try:
+                  if event["RequestType"] == "Delete":
+                      empty(p["SiteBucket"])
+                  else:
+                      deploy(p)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print("failed", repr(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e)[:200])
+
+  SiteContent:
+    Type: Custom::SiteContent
+    Properties:
+      ServiceToken: !GetAtt SiteDeployer.Arn
+      ArtifactBucket: !Ref FrontendArtifactBucket
+      ArtifactKey: !Ref FrontendArtifactKey
+      SiteBucket: !Ref SiteBucket
+      DistributionId: !Ref Distribution
+
+  # ---------------------------------------------------------------- monitoring
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type":"text","x":0,"y":0,"width":24,"height":2,"properties":{"markdown":"# Launchpad\nDemo launches, sign-ins, and the health of what runs them. Demo and user counts come from the `Launchpad` metrics namespace."}},
+            {"type":"metric","x":0,"y":2,"width":12,"height":6,"properties":{"title":"Demo launches and teardowns","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoLaunchRequested\"', 'Sum', 300)","label":"launch requested","id":"e1"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoLaunchSucceeded\"', 'Sum', 300)","label":"launch succeeded","id":"e2"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoLaunchFailed\"', 'Sum', 300)","label":"launch failed","id":"e3"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoTeardownRequested\"', 'Sum', 300)","label":"teardown requested","id":"e4"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoTeardownFailed\"', 'Sum', 300)","label":"teardown failed","id":"e5"}]
+            ]}},
+            {"type":"metric","x":12,"y":2,"width":12,"height":6,"properties":{"title":"Sign-ins","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+              ["Launchpad","SignInStarted"],["Launchpad","SignInSucceeded"],["Launchpad","SignInFailed"],["Launchpad","CredentialsSaved"],
+              [{"expression":"SEARCH('{Launchpad,status} MetricName=\"UserRegistered\"', 'Sum', 300)","label":"registered","id":"e6"}]
+            ]}},
+            {"type":"metric","x":0,"y":8,"width":12,"height":6,"properties":{"title":"Terraform run time (seconds)","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
+              [{"expression":"SEARCH('{Launchpad,action} MetricName=\"TerraformSeconds\"', 'Maximum', 300)","label":"longest","id":"e7"}]
+            ]}},
+            {"type":"log","x":12,"y":8,"width":12,"height":6,"properties":{"title":"Failed runs","region":"${AWS::Region}","view":"table","query":"SOURCE '/aws/lambda/${AWS::StackName}-runner' | fields @timestamp, @message | filter @message like /Run failed/ | sort @timestamp desc | limit 20"}},
+            {"type":"metric","x":0,"y":14,"width":12,"height":6,"properties":{"title":"Lambda invocations and errors","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+              ["AWS/Lambda","Invocations","FunctionName","${Api}",{"label":"api invocations"}],
+              ["AWS/Lambda","Errors","FunctionName","${Api}",{"label":"api errors"}],
+              ["AWS/Lambda","Invocations","FunctionName","${Runner}",{"label":"runner invocations"}],
+              ["AWS/Lambda","Errors","FunctionName","${Runner}",{"label":"runner errors"}],
+              ["AWS/Lambda","Throttles","FunctionName","${Api}",{"label":"api throttles"}]
+            ]}},
+            {"type":"metric","x":12,"y":14,"width":12,"height":6,"properties":{"title":"Lambda duration (ms)","region":"${AWS::Region}","period":300,"view":"timeSeries","metrics":[
+              ["AWS/Lambda","Duration","FunctionName","${Api}",{"stat":"p90","label":"api p90"}],
+              ["AWS/Lambda","Duration","FunctionName","${Runner}",{"stat":"Maximum","label":"runner max"}]
+            ]}},
+            {"type":"metric","x":0,"y":20,"width":12,"height":6,"properties":{"title":"HTTP API","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+              ["AWS/ApiGateway","Count","ApiId","${HttpApi}"],
+              ["AWS/ApiGateway","4xx","ApiId","${HttpApi}"],
+              ["AWS/ApiGateway","5xx","ApiId","${HttpApi}"]
+            ]}},
+            {"type":"metric","x":12,"y":20,"width":12,"height":6,"properties":{"title":"DynamoDB","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+              ["AWS/DynamoDB","ConsumedReadCapacityUnits","TableName","${Table}"],
+              ["AWS/DynamoDB","ConsumedWriteCapacityUnits","TableName","${Table}"],
+              ["AWS/DynamoDB","ThrottledRequests","TableName","${Table}"],
+              ["AWS/DynamoDB","SystemErrors","TableName","${Table}"]
+            ]}},
+            {"type":"metric","x":0,"y":26,"width":12,"height":6,"properties":{"title":"SES sign-in email","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+              ["AWS/SES","Send"],["AWS/SES","Bounce"],["AWS/SES","Complaint"],["AWS/SES","Reject"]
+            ]}},
+            {"type":"metric","x":12,"y":26,"width":12,"height":6,"properties":{"title":"CloudFront","region":"us-east-1","period":300,"view":"timeSeries","metrics":[
+              ["AWS/CloudFront","Requests","DistributionId","${Distribution}","Region","Global",{"stat":"Sum"}],
+              ["AWS/CloudFront","5xxErrorRate","DistributionId","${Distribution}","Region","Global",{"stat":"Average","yAxis":"right"}]
+            ]}}
+          ]
+        }
+
+Outputs:
+  SiteUrl:
+    Description: Open this to use Launchpad.
+    Value: !Sub https://${Distribution.DomainName}
+  DashboardUrl:
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AWS::StackName}
+  StateBucketName:
+    Description: Holds the Terraform state of every demo. It is kept when the stack is deleted.
+    Value: !Ref StateBucket
