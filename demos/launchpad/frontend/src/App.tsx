@@ -2,6 +2,7 @@ import {useCallback, useEffect, useState} from 'react';
 import {api, ApiError, User} from './api';
 import {CredentialsPage} from './components/CredentialsPage';
 import {Demos} from './components/Demos';
+import {Logo} from './components/Logo';
 import {SignIn} from './components/SignIn';
 
 type View = 'demos' | 'credentials';
@@ -48,7 +49,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <strong className="brand">Launchpad</strong>
+        <span className="brand"><Logo size={26} />Launchpad</span>
         <nav aria-label="Main">
           {tabs.map(([v, label]) => (
             <button key={v} className={`tab${current === v ? ' active' : ''}`} aria-current={current === v ? 'page' : undefined} onClick={() => go(v)}>

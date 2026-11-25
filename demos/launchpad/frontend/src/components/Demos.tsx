@@ -53,7 +53,10 @@ export function Demos({user, onNeedCredentials}: Props) {
   return (
     <section>
       <div className="section-head">
-        <h2>Demos</h2>
+        <div>
+          <h2>Demos</h2>
+          <p className="muted">Launch a demo into this AWS account, and tear it down when you are done.</p>
+        </div>
         {user.role === 'admin' && <button onClick={refresh}>Re-read repository</button>}
       </div>
       {error && <p className="error" role="alert">{error}</p>}
@@ -121,7 +124,8 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
   return (
     <article className="card">
       <header>
-        <h3>{demo.name}</h3>
+        <span className="tile" aria-hidden="true">{demo.name.slice(0, 1)}</span>
+        <div className="grow"><h3>{demo.name}</h3></div>
         {state && <span className={`pill ${state.status}`}>{LABEL[state.status]}{transient ? '…' : ''}</span>}
       </header>
       {demo.description && <p>{demo.description}</p>}

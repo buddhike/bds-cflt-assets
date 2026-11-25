@@ -1,5 +1,6 @@
 import {FormEvent, useState} from 'react';
 import {api, errorText} from '../api';
+import {Logo} from './Logo';
 
 interface Props {
   onSignedIn: () => void;
@@ -52,6 +53,7 @@ export function SignIn({onSignedIn}: Props) {
 
   return (
     <main className="gate">
+      <Logo size={40} />
       <h1>Launchpad</h1>
       <p className="muted">Launch and tear down demos in AWS.</p>
       {step === 'phone' ? (

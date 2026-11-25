@@ -46,20 +46,21 @@ export function CredentialsPage({current, onChanged}: Props) {
   }
 
   return (
-    <section>
+    <section className="panel">
       <h2>Confluent Cloud credentials</h2>
       <p>
         Demos that create Confluent Cloud resources use your Cloud API key. It is encrypted before it is stored, is
         never shown again, and is only decrypted while a demo you launch is being deployed or torn down.
       </p>
       {current?.configured ? (
-        <p className="notice">
-          A key ending in <code>{current.apiKeyHint}</code> is saved.{' '}
+        <p className="status-line ok">
+          A key ending in <code>{current.apiKeyHint}</code> is saved.
           <button className="link" disabled={busy} onClick={remove}>Delete it</button>
         </p>
       ) : (
-        <p className="muted">No key is saved.</p>
+        <p className="status-line">No key is saved.</p>
       )}
+      <div className="form-card">
       <form onSubmit={save} autoComplete="off">
         <label>
           Cloud API key
@@ -78,7 +79,8 @@ export function CredentialsPage({current, onChanged}: Props) {
         </label>
         <button className="primary" disabled={busy}>{current?.configured ? 'Replace key' : 'Save key'}</button>
       </form>
-      {saved && <p className="notice" role="status">Saved.</p>}
+      </div>
+      {saved && <p className="status-line ok" role="status">Saved.</p>}
       {error && <p className="error" role="alert">{error}</p>}
     </section>
   );
