@@ -36,6 +36,8 @@ export default function App() {
       events.onLatency(setLatency),
       events.onSetupDone((r) => { setActionError(r.error); refresh(); }),
       events.onTeardownDone((r) => { setActionError(r.error); refresh(); }),
+      // Events sent while the browser was disconnected are gone: start from the server's state again.
+      events.onReconnect(refresh),
     ];
     return () => offs.forEach((off) => off());
   }, [refresh]);
@@ -58,6 +60,8 @@ export default function App() {
   const schemaReady = state.steps.find((s) => s.id === 'schema')?.status === 'done' || state.sim.running || state.sim.events > 0;
   // Queries run in the DuckDB container, which setup starts, and the teardown deletes.
   const queryReady = state.steps.find((s) => s.id === 'services')?.status === 'done' && busy !== 'teardown';
+  const managed = !!state.managed;
+  const setupFailed = state.steps.some((s) => s.status === 'failed');
   const errorCount = logs.filter((l) => l.level.toUpperCase() === 'ERROR').length;
   const warnCount = logs.filter((l) => l.level.toUpperCase() === 'WARN').length;
 
@@ -79,17 +83,26 @@ export default function App() {
         </div>
         <div className="actions">
           {busy && <span className="pill pill-on">● {busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
-          <button className="primary" disabled={!!busy} onClick={() => run(api.setup)}>
-            {stepsStarted ? 'Re-run setup' : 'Set up demo'}
-          </button>
-          {confirmTeardown ? (
-            <span className="confirm">
-              Delete all cloud and local resources?
-              <button className="danger" onClick={() => { setConfirmTeardown(false); run(api.teardown); }}>Delete everything</button>
-              <button onClick={() => setConfirmTeardown(false)}>Cancel</button>
-            </span>
+          {managed ? (
+            <>
+              {!busy && setupFailed && <button className="primary" onClick={() => run(api.setup)}>Retry setup</button>}
+              <span className="pill" title="Launchpad deployed this demo and tears it down">Managed by Launchpad</span>
+            </>
           ) : (
-            <button disabled={!!busy} onClick={() => setConfirmTeardown(true)}>Tear down</button>
+            <>
+              <button className="primary" disabled={!!busy} onClick={() => run(api.setup)}>
+                {stepsStarted ? 'Re-run setup' : 'Set up demo'}
+              </button>
+              {confirmTeardown ? (
+                <span className="confirm">
+                  Delete all cloud and local resources?
+                  <button className="danger" onClick={() => { setConfirmTeardown(false); run(api.teardown); }}>Delete everything</button>
+                  <button onClick={() => setConfirmTeardown(false)}>Cancel</button>
+                </span>
+              ) : (
+                <button disabled={!!busy} onClick={() => setConfirmTeardown(true)}>Tear down</button>
+              )}
+            </>
           )}
         </div>
       </header>
