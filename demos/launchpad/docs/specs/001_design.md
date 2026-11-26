@@ -107,11 +107,82 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 | `POST /api/demos/{id}/launch` | session | start `terraform apply` |
 | `POST /api/demos/{id}/teardown` | launcher or admin | start `terraform destroy` |
 
-## Demo state machine
+## Demo lifecycle
 
-`status` is absent (not deployed), `launching`, `running`, `launch_failed`,
-`tearing_down` or `teardown_failed`. Transitions are conditional writes, so
-two clicks cannot start two runs:
+A demo is deployed at most once at a time. Its deployment is the `DEMO#<id>` /
+`STATE` item, and `status` says where it is in the lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotDeployed
+    NotDeployed: not deployed (no STATE item)
+    NotDeployed --> launching: launch
+    launching --> running: apply succeeded
+    launching --> launch_failed: apply failed
+    launch_failed --> launching: retry launch
+    launching --> launching: resume (time limit, up to 8 times)
+    running --> tearing_down: teardown
+    launch_failed --> tearing_down: teardown
+    teardown_failed --> tearing_down: retry teardown
+    tearing_down --> teardown_failed: destroy failed
+    tearing_down --> tearing_down: resume (time limit, up to 8 times)
+    tearing_down --> NotDeployed: destroy succeeded (STATE deleted)
+```
+
+| Status | Meaning | What the user can do |
+|---|---|---|
+| absent | Nothing is deployed. The demo is in the catalog only | Launch |
+| `launching` | A runner is applying Terraform | Wait. The page shows the log tail |
+| `running` | Applied. `url` holds `launchpad_url` | Open it, or tear down |
+| `launch_failed` | The apply failed or could not start. `error` says why | Retry the launch, or tear down what was partly created |
+| `tearing_down` | A runner is destroying | Wait |
+| `teardown_failed` | The destroy failed. Resources may remain | Retry the teardown |
+
+### Launch
+
+1. `POST /api/demos/{id}/launch` reads the demo from the cached catalog. It
+   refuses a demo that does not follow the interface (`invalid_demo`) and, for a
+   demo that needs Confluent Cloud, a user with no saved key
+   (`credentials_required`).
+2. It writes the `STATE` item with `status=launching`, a fresh `runId`, and
+   `ref` and `path` copied from the catalog entry. The write succeeds only if
+   the item is absent or `launch_failed`, otherwise the answer is `409
+   not_launchable`.
+3. It starts the runner asynchronously. If the runner cannot be started the item
+   goes straight to `launch_failed` and the answer is `502 runner_unavailable`.
+4. The runner applies the demo (see [Runner](#runner)). It ends the run with
+   `running` and the `launchpad_url`, or with `launch_failed` and an error.
+
+### Retry a failed launch
+
+A retry is a new launch, not a continuation. It starts again from step 1, with a
+new `runId`, `resumes` back at 0 and the error cleared. Terraform state is kept in
+S3, so the apply carries on from what the failed run created.
+
+A retry runs the commit `ref` of the **cached** catalog entry, not the tip of
+`DemosRepoRef`. The cache is re-read when a demo listing finds it older than 10
+minutes (`CacheSeconds`) or when an admin calls `POST /api/demos/refresh`. The
+launch call itself never refreshes it. To run a fix just pushed to GitHub, refresh
+the catalog and then retry. The `ref` is fixed for the whole run, including its
+resumed slices, so one run never changes version part way through.
+
+### Teardown
+
+1. `POST /api/demos/{id}/teardown` needs the person who launched the demo, or the
+   admin. It is allowed from `running`, `launch_failed` and `teardown_failed`
+   (otherwise `409 not_tearable`).
+2. It sets `status=tearing_down` with a fresh `runId`. The `ref` is **not**
+   changed, so the destroy uses the code that was last applied. A demo that needs
+   Confluent Cloud is destroyed with the key of the person who launched it, or
+   else the key of the person tearing it down.
+3. Before it destroys anything, the runner asks a demo that wants it to shut
+   itself down (see [Shutdown hook](#shutdown-hook)).
+4. On success the runner deletes the `STATE` item and the demo is not deployed
+   again. On failure the status is `teardown_failed`.
+
+### State machine
+
+Transitions are conditional writes, so two clicks cannot start two runs:
 
 * launch: from absent or `launch_failed` to `launching`
 * teardown: from `running`, `launch_failed` or `teardown_failed` to
@@ -129,7 +200,8 @@ the item exits, so a stale invocation never changes a newer run.
 3. Download the demo source at the `ref` recorded at launch (the commit SHA of
    `DemosRepoRef` at that time), so teardown uses the code that was applied.
 4. Check the interface below, write the backend file, `terraform init`.
-5. `apply -auto-approve` or `destroy -auto-approve`, with a deadline. At the
+5. For a teardown that is not a resumed slice, call the demo's shutdown hook
+   if it has one. Then `apply -auto-approve` or `destroy -auto-approve`, with a deadline. At the
    deadline Terraform gets SIGINT and 90 s to stop. If it has not finished
    the runner re-invokes itself with `resumes + 1`, up to 8 times.
 6. After an interrupted run the state lock may be stale. The runner clears it
@@ -153,8 +225,36 @@ A demo directory has `tf/` and may have `demo.json` with `name` and
 | `confluent_cloud_api_key`, `confluent_cloud_api_secret` | string, sensitive | no | the launching user's saved key. A demo that declares them needs one |
 
 The demo must declare the output `launchpad_url` (string, the URL the user
-opens, empty if there is none). It must not declare a `backend`: Launchpad
+opens, empty if there is none), and may declare `launchpad_shutdown` (see
+[Shutdown hook](#shutdown-hook)). It must not declare a `backend`: Launchpad
 supplies an S3 backend at `demos/<id>/terraform.tfstate`.
+
+### Shutdown hook
+
+A demo can have things outside its Terraform that must be undone before Terraform
+can delete what it made. PIMS, for one, switches Tableflow on for the topics
+that Terraform owns, and Terraform cannot delete a topic that has it. Such a demo
+declares the optional output `launchpad_shutdown`, a sensitive JSON string:
+
+```json
+{"url": "https://<demo>/shutdown", "token": "<secret>"}
+```
+
+Before `terraform destroy` the runner reads the output (after `init`, from the
+state in S3) and sends `POST <url>` with `Authorization: Bearer <token>`. The `url`
+must be `https`: the token travels with the request, and a demo whose output says
+otherwise is not called. The request has no redirects and 65 seconds.
+
+| The demo answers | The runner |
+|---|---|
+| any 2xx | destroys |
+| 502, 503, 504, or no answer at all, three tries 5 seconds apart | destroys. Nobody is behind the gateway, and a demo that is gone must still be destroyable |
+| anything else, such as a 500 with `{"error": "..."}` | does not destroy. The run ends `teardown_failed` with the demo's message, and the person retries the teardown |
+| an unusable output | logs why and destroys |
+
+So a demo says "I tried and failed" with a status other than 502, 503 and 504,
+and the call must be safe to repeat. A teardown resumed in a later slice does not
+ask again. The token is hidden in the run's log and in the error.
 
 ## Observability
 

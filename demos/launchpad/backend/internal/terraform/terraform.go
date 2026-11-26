@@ -142,14 +142,25 @@ func NewLogTail(secrets ...string) *LogTail {
 	return t
 }
 
+// Hide makes the tail hide secret from now on, if it is four characters or more. Lines
+// already added are not changed.
+func (t *LogTail) Hide(secret string) {
+	if len(secret) < 4 {
+		return
+	}
+	t.mu.Lock()
+	t.secrets = append(t.secrets, secret)
+	t.mu.Unlock()
+}
+
 // Add appends one line.
 func (t *LogTail) Add(line string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for _, s := range t.secrets {
 		line = strings.ReplaceAll(line, s, "***")
 	}
 	line = strings.TrimRight(line, "\n")
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.lines = append(t.lines, line)
 	if len(t.lines) > t.maxLines {
 		t.lines = t.lines[len(t.lines)-t.maxLines:]

@@ -62,6 +62,10 @@ type Runner struct {
 	MinUseful time.Duration
 	// Grace is how long Terraform gets to stop after an interrupt.
 	Grace time.Duration
+	// HTTP sends the shutdown request to a demo. Nil means a client that gives each request 65 seconds and follows no redirect.
+	HTTP services.HTTP
+	// ShutdownBackoff is the wait between tries of the shutdown request.
+	ShutdownBackoff time.Duration
 	// LookupEnv reads the Lambda's environment. It is os.LookupEnv unless a test replaces it.
 	LookupEnv func(string) (string, bool)
 }
@@ -76,6 +80,8 @@ func New(svc *services.Services, work string) *Runner {
 		MinUseful:  120 * time.Second,
 		Grace:      terraform.StopGrace,
 		LookupEnv:  os.LookupEnv,
+
+		ShutdownBackoff: 5 * time.Second,
 	}
 }
 
@@ -267,6 +273,15 @@ func (a *slice) do(ctx context.Context) (string, error) {
 		return "", failure("terraform init failed")
 	}
 
+	// A demo may need to clean up what it set up outside Terraform before Terraform deletes
+	// what it made. Later slices of the same teardown do not ask again: the demo is
+	// already shut down, or partly destroyed.
+	if a.destroy && ev.Resumes == 0 {
+		if err := a.shutDownDemo(ctx, tf, creds); err != nil {
+			return "", err
+		}
+	}
+
 	budget := a.remaining() - a.Reserve
 	if budget < a.MinUseful {
 		return a.resume(ctx, "not enough time left")
@@ -324,6 +339,13 @@ func (a *slice) do(ctx context.Context) (string, error) {
 
 // readURL reads the demo's launchpad_url output. An output that cannot be read, or is empty, is an empty address.
 func readURL(ctx context.Context, tf *terraform.Terraform, creds *credentials.Credentials) (string, error) {
+	return readOutput(ctx, tf, creds, "launchpad_url", true)
+}
+
+// readOutput reads one of the demo's outputs with `output -raw`. One that cannot be read,
+// because the demo has none or nothing was applied, is empty. If logFailure is set, what
+// Terraform said about that goes to the run's log.
+func readOutput(ctx context.Context, tf *terraform.Terraform, creds *credentials.Credentials, name string, logFailure bool) (string, error) {
 	// The command gets a log of its own, so what it prints is the answer and nothing before it.
 	only := *tf
 	if creds != nil {
@@ -331,13 +353,15 @@ func readURL(ctx context.Context, tf *terraform.Terraform, creds *credentials.Cr
 	} else {
 		only.Log = terraform.NewLogTail()
 	}
-	out, err := only.Run(ctx, time.Time{}, "output", "-raw", "launchpad_url")
+	out, err := only.Run(ctx, time.Time{}, "output", "-raw", name)
 	if err != nil {
 		return "", err
 	}
 	if out.Code != 0 {
-		for _, line := range strings.Split(out.Output, "\n") {
-			tf.Log.Add(line)
+		if logFailure {
+			for _, line := range strings.Split(out.Output, "\n") {
+				tf.Log.Add(line)
+			}
 		}
 		return "", nil
 	}

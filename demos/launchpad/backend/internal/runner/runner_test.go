@@ -25,7 +25,7 @@ FAKE_LOG=@LOG@; FAKE_LOCK=@LOCK@; FAKE_MODE=@MODE@
 echo "terraform $@" >> "$FAKE_LOG"
 case "$1" in
   init) exit 0 ;;
-  output) printf '%s' '@URL@'; exit 0 ;;
+  output) case "$3" in launchpad_shutdown) printf '%s' '@HOOK@' ;; *) printf '%s' '@URL@' ;; esac; exit 0 ;;
   force-unlock) rm -f "$FAKE_LOCK"; exit 0 ;;
   apply|destroy)
     if [ -f "$FAKE_LOCK" ]; then
@@ -43,6 +43,7 @@ type fixture struct {
 	*testenv.Env
 	runner *runner.Runner
 	tmp    string
+	hook   string // what the fake Terraform prints for the launchpad_shutdown output
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -72,7 +73,7 @@ func newFixture(t *testing.T) *fixture {
 // environment from it, so the settings are baked into the script.
 func (f *fixture) install(mode, url string) {
 	script := strings.NewReplacer(
-		"@LOG@", filepath.Join(f.tmp, "calls.log"), "@LOCK@", filepath.Join(f.tmp, "lock"), "@MODE@", mode, "@URL@", url,
+		"@LOG@", filepath.Join(f.tmp, "calls.log"), "@LOCK@", filepath.Join(f.tmp, "lock"), "@MODE@", mode, "@URL@", url, "@HOOK@", f.hook,
 	).Replace(fakeTerraform)
 	if err := os.WriteFile(filepath.Join(f.tmp, "work", "bin", "terraform"), []byte(script), 0o755); err != nil {
 		panic(err)
