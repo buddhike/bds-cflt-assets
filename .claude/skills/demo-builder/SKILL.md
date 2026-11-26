@@ -58,6 +58,7 @@ Launchpad passes these as `TF_VAR_*`:
 | `aws_region` | Where Launchpad runs. Use it for the AWS provider **and** the Confluent cluster, and check Confluent features (for example Flink: `confluent flink region list --cloud AWS`) exist there |
 | `launchpad_tags` | `map(string)`. Put it in the AWS provider's `default_tags` so everything is tagged `launchpad:managed=true` and `launchpad:demo=<id>` |
 | `launchpad_demo_id` | Optional. Give it a default equal to the directory name so `terraform validate` and tests work without Launchpad |
+| `launchpad_ref` | Optional, default `""`. The commit SHA Launchpad downloaded the demo at. Use it as the image tag (`coalesce(var.image_tag, var.launchpad_ref, "latest")`): a `latest` tag never changes the task definition, so an update would not redeploy |
 | `confluent_cloud_api_key`, `confluent_cloud_api_secret` | Optional, `sensitive`. Declaring **both** makes Launchpad require the user to have saved a key before launching, and it sets `CONFLUENT_CLOUD_API_KEY/SECRET` in the environment too. Teardown uses the launching user's key |
 
 Outputs: `launchpad_url` (required string, empty allowed) and the optional `launchpad_shutdown` (section 5). Other outputs are free; the existing demos expose IDs and the log group for debugging.

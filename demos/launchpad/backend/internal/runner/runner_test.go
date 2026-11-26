@@ -172,7 +172,7 @@ func TestADemoWithNoAddressRunsWithAnEmptyOne(t *testing.T) {
 func TestTheDirectoriesTerraformIsPointedAtExist(t *testing.T) {
 	f := newFixture(t)
 	f.run(t, f.launch(t, "plain"), 900*time.Second)
-	env, err := f.runner.BuildEnv("plain", nil)
+	env, err := f.runner.BuildEnv("plain", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestTheEnvironmentForTerraformIsMinimal(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv("GITHUB_TOKEN", "ghp_leak")
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA")
-	env, err := f.runner.BuildEnv("pims", &credentials.Credentials{APIKey: "K", APISecret: "S"})
+	env, err := f.runner.BuildEnv("pims", "0123abc", &credentials.Credentials{APIKey: "K", APISecret: "S"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,10 +206,10 @@ func TestTheEnvironmentForTerraformIsMinimal(t *testing.T) {
 	if env["TF_VAR_launchpad_tags"] != `{"launchpad:demo":"pims","launchpad:managed":"true"}` {
 		t.Errorf("tags %s", env["TF_VAR_launchpad_tags"])
 	}
-	if env["TF_VAR_aws_region"] != "us-east-1" || env["CONFLUENT_CLOUD_API_KEY"] != "K" || env["TF_VAR_launchpad_demo_id"] != "pims" {
+	if env["TF_VAR_aws_region"] != "us-east-1" || env["CONFLUENT_CLOUD_API_KEY"] != "K" || env["TF_VAR_launchpad_demo_id"] != "pims" || env["TF_VAR_launchpad_ref"] != "0123abc" {
 		t.Errorf("env %v", env)
 	}
-	plain, _ := f.runner.BuildEnv("plain", nil)
+	plain, _ := f.runner.BuildEnv("plain", "", nil)
 	if _, ok := plain["CONFLUENT_CLOUD_API_KEY"]; ok {
 		t.Error("credentials were passed to a demo that has none")
 	}

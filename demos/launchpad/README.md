@@ -97,6 +97,7 @@ Launchpad sets these Terraform variables, so declare the ones you use:
 | `aws_region` | yes | The region Launchpad runs in |
 | `launchpad_tags` | yes | Map of tags. Put it in the AWS provider's `default_tags` |
 | `launchpad_demo_id` | no | The directory name |
+| `launchpad_ref` | no | The commit SHA the demo was downloaded at. Use it as the image tag, so that an update deploys the images of that commit |
 | `confluent_cloud_api_key`, `confluent_cloud_api_secret` | no | The launching user's key. Declare both, and Launchpad makes the user save one before launching. The Confluent provider also reads them from its environment variables |
 
 And it reads this output:

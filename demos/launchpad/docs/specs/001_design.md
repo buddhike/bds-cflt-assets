@@ -327,6 +327,7 @@ Launchpad passes (as `TF_VAR_*`):
 | `aws_region` | string | yes | the region Launchpad is deployed in |
 | `launchpad_tags` | map(string) | yes | apply to every resource that takes tags, for example as provider `default_tags` |
 | `launchpad_demo_id` | string | no | the directory name |
+| `launchpad_ref` | string | no | the commit SHA the demo was downloaded at (the `ref` of the run). A demo that publishes an image per commit can use it as the image tag, so an update deploys the images of the commit it applies |
 | `confluent_cloud_api_key`, `confluent_cloud_api_secret` | string, sensitive | no | the launching user's saved key. A demo that declares them needs one |
 
 The demo must declare the output `launchpad_url` (string, the URL the user

@@ -100,8 +100,9 @@ func backendArgs(svc *services.Services, demoID string) []string {
 	}
 }
 
-// BuildEnv is the environment Terraform runs with.
-func (r *Runner) BuildEnv(demoID string, creds *credentials.Credentials) (map[string]string, error) {
+// BuildEnv is the environment Terraform runs with. ref is the commit the demo was
+// downloaded at: a demo that publishes an image per commit can deploy exactly that one.
+func (r *Runner) BuildEnv(demoID, ref string, creds *credentials.Credentials) (map[string]string, error) {
 	env := map[string]string{}
 	for _, k := range passThrough {
 		if v, ok := r.LookupEnv(k); ok {
@@ -121,6 +122,7 @@ func (r *Runner) BuildEnv(demoID string, creds *credentials.Credentials) (map[st
 		"TF_PLUGIN_CACHE_DIR":      filepath.Join(r.Work, "plugin-cache"),
 		"TF_VAR_aws_region":        r.Svc.Settings.Region,
 		"TF_VAR_launchpad_demo_id": demoID,
+		"TF_VAR_launchpad_ref":     ref,
 		"TF_VAR_launchpad_tags":    string(tags),
 	} {
 		env[k] = v
@@ -275,7 +277,7 @@ func (a *slice) do(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	env, err := a.BuildEnv(ev.DemoID, creds)
+	env, err := a.BuildEnv(ev.DemoID, state.Ref, creds)
 	if err != nil {
 		return "", err
 	}
