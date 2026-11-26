@@ -189,6 +189,7 @@ per app.
 | Component | Class or element | Rules |
 |---|---|---|
 | Button | `button`, `a.button` | One `.primary` per card or toolbar. `.danger` only inside a confirmation. `.quiet` for tertiary actions, `.link` for an inline action, `.sm` for dense toolbars |
+| Stack | `.stack` | Vertical rhythm of 1rem between children: forms, gates, page sections. Prefer it to margins on the children |
 | Field | `.field` with a `label`, an `input` and `.hint` | Label above the control. `.invalid` turns the hint into the error message |
 | Status | `.pill` + `.ok` `.busy` `.warn` `.danger` | See [Status language](#status-language) |
 | Tag | `ul.tags > li.tag` | The Confluent Cloud products a demo shows, in the order of `demo.json` |

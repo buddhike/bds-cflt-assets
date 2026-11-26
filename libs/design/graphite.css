@@ -287,7 +287,9 @@ button svg, .button svg { width: 14px; height: 14px; flex: none; }
 :where(input, select, textarea):hover:not(:disabled) { border-color: var(--text-2); }
 :where(input, select, textarea):focus { border-color: var(--accent); }
 :where(input, select, textarea):disabled { opacity: .55; cursor: not-allowed; }
-.field { display: grid; gap: .35rem; margin-bottom: 1rem; }
+.stack { display: grid; gap: 1rem; align-content: start; }
+.stack > * { margin-block: 0; }
+.field { display: grid; gap: .35rem; }
 .field > label, label.field-label { font-size: var(--fs-small); font-weight: 600; }
 .field .hint { font-size: var(--fs-small); color: var(--text-3); }
 .field.invalid :where(input, select, textarea) { border-color: var(--danger); }
@@ -380,7 +382,7 @@ button svg, .button svg { width: 14px; height: 14px; flex: none; }
 .page-head p { margin: .2rem 0 0; color: var(--text-2); }
 
 /* A page in front of the app: sign in, credentials needed. */
-.gate { max-width: 25rem; margin: 14vh auto 0; padding: 1.75rem; display: grid; gap: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.gate { max-width: 25rem; margin: 14vh auto 0; padding: 1.75rem; display: grid; gap: 1rem; align-content: start; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); }
 .gate > * { margin: 0; }
 @media (max-width: 30rem) { .gate { margin: 0; min-height: 100vh; border: 0; border-radius: 0; padding-top: 15vh; } }
 
