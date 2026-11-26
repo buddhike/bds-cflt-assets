@@ -1,4 +1,4 @@
 {
   "name": "Automated API diagnosis",
-  "description": "Ten simulated API gateway services log to Confluent Cloud. Flink finds the ones turning unhealthy, and an optional AI agent writes up why. Break an API, cascade the failure to the ones that depend on it, and watch the diagnosis."
+  "description": "Break simulated APIs and watch Flink detect the unhealthy ones in Confluent Cloud, while an AI agent writes up the diagnosis."
 }
