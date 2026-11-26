@@ -490,10 +490,13 @@ Resources:
         {
           "widgets": [
             {"type":"text","x":0,"y":0,"width":24,"height":2,"properties":{"markdown":"# Launchpad\nDemo launches, sign-ins, and the health of what runs them. Demo and user counts come from the `Launchpad` metrics namespace."}},
-            {"type":"metric","x":0,"y":2,"width":12,"height":6,"properties":{"title":"Demo launches and teardowns","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
+            {"type":"metric","x":0,"y":2,"width":12,"height":6,"properties":{"title":"Demo launches, updates and teardowns","region":"${AWS::Region}","stat":"Sum","period":300,"view":"timeSeries","metrics":[
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoLaunchRequested\"', 'Sum', 300)","label":"launch requested","id":"e1"}],
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoLaunchSucceeded\"', 'Sum', 300)","label":"launch succeeded","id":"e2"}],
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoLaunchFailed\"', 'Sum', 300)","label":"launch failed","id":"e3"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoUpdateRequested\"', 'Sum', 300)","label":"update requested","id":"u1"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoUpdateSucceeded\"', 'Sum', 300)","label":"update succeeded","id":"u2"}],
+              [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoUpdateFailed\"', 'Sum', 300)","label":"update failed","id":"u3"}],
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoTeardownRequested\"', 'Sum', 300)","label":"teardown requested","id":"e4"}],
               [{"expression":"SEARCH('{Launchpad,demo} MetricName=\"DemoTeardownFailed\"', 'Sum', 300)","label":"teardown failed","id":"e5"}]
             ]}},
