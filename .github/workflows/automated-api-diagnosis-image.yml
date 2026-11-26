@@ -53,8 +53,10 @@ jobs:
         with:
           # The action lowercases the image name, which GHCR requires.
           images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE }}
+          # No "sha-" prefix (the action's default): the tag is the bare commit SHA, which is
+          # what Launchpad passes to Terraform as launchpad_ref.
           tags: |
-            type=sha,format=long
+            type=sha,format=long,prefix=
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
