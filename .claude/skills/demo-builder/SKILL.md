@@ -7,7 +7,7 @@ description: How to build a demo that Launchpad can launch and tear down in this
 
 Launchpad (`demos/launchpad`) launches a demo into an AWS account with `terraform apply` and removes it with `terraform destroy`, from a Lambda. A demo is therefore **a Terraform root module plus whatever it deploys**. In this repository that is a Go web service in an ECS task behind CloudFront, with Confluent Cloud resources made by the `confluent` provider.
 
-The authoritative contract is `demos/launchpad/docs/specs/001_design.md` ("Demo interface", "Shutdown hook") and `demos/launchpad/README.md` ("Adding a demo"). The README links `002_design.md` and `001_overview.md`, which are not in the repository; the design is `001_design.md`. `demos/launchpad/backend/internal/demoif/demoif.go` is the check Launchpad actually runs, so when the docs and the code differ, the code wins.
+The authoritative contract is `demos/launchpad/docs/specs/001_design.md` ("Demo interface", "Shutdown hook") and `demos/launchpad/README.md` ("Adding a demo"). The design is `001_design.md`; the overview it implements is no longer in the repository. `demos/launchpad/backend/internal/demoif/demoif.go` is the check Launchpad actually runs, so when the docs and the code differ, the code wins.
 
 Two finished demos are the reference. Copy their shape rather than inventing one:
 
@@ -147,13 +147,14 @@ docker build -f docker/Dockerfile -t <id> .
 
 Also check the interface the way Launchpad does: `cd demos/launchpad/backend && go test ./internal/demoif/...`, and read `demoif.Check` against `tf/*.tf` by eye if in doubt.
 
-Then, to prove it works in the cloud: push, make the image package public (or give it credentials), open Launchpad, click **Refresh** (admin), **Launch**, open the URL, then **Tear down** and confirm no `launchpad:demo=<id>` resources remain (the Confluent environment and the AWS tag are the two places to look). Launch, tear down, launch again: the second launch proves repeatability.
+Then, to prove it works in the cloud: push, make the image package public (or give it credentials), open Launchpad, click **Refresh** (admin), **Launch**, open the URL, then **Tear down** and confirm no `launchpad:demo=<id>` resources remain (the Confluent environment and the AWS tag are the two places to look). Launch, tear down, launch again: the second launch proves repeatability. Then prove the update: push a change inside the demo's directory, click **Update** (or **Check for update**) on the card, and confirm the running demo changed without being torn down. An update is an `apply` over live resources, so read `terraform plan` for a resource that would be destroyed and created.
 
 ## 8. Debugging a failed run
 
 * The demo page in Launchpad shows the **log tail** of the run and the `error`. The runner logs are in the `runner` Lambda's CloudWatch group.
 * `invalid_demo` → section 2's list. `credentials_required` → the demo declares the Confluent variables and the user has not saved a key.
 * `launch_failed` then retry: the retry runs the **cached** commit. Refresh the catalog first.
+* `update_failed`: the update applied the newest commit and failed. A failure before Terraform changed anything (init, the interface check) leaves the demo at the code it had, so it can still be torn down. A failure while applying leaves the new commit, so fix the demo, push, and press **Retry update**, which reads the repository itself. `up_to_date` means nothing inside this demo's directory changed since it was applied. `credentials_required` on an update means the **launcher** has no saved key.
 * Apply stuck on the ECS service: the task cannot start or never passes `/healthz`. Check the log group the demo outputs; for a private GHCR image, the circuit breaker should have failed it with an image pull error.
 * `teardown_failed` with a message from the app: the shutdown hook answered something other than 2xx/502/503/504. Fix the cause and retry teardown, which asks the hook again.
 * `teardown_failed` otherwise: Terraform could not delete something. Common causes are a Confluent resource still in use (Tableflow on a topic, a Flink statement running on the pool) or a dependency order. Retry first, since many deletes are eventually consistent.
