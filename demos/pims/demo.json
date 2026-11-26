@@ -1,4 +1,9 @@
 {
   "name": "PIMS",
-  "description": "Stream a clinic's MySQL database into Iceberg tables with Debezium and Tableflow, watch how fresh they are, and query them with DuckDB."
+  "description": "Stream a clinic's MySQL database into Iceberg tables with Debezium and Tableflow, watch how fresh they are, and query them with DuckDB.",
+  "tags": [
+    "Apache Kafka",
+    "Schema Registry",
+    "Tableflow"
+  ]
 }
