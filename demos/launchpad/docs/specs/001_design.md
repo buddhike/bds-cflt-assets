@@ -109,6 +109,11 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 | `POST /api/demos/{id}/update` | launcher or admin | re-read the repository, then start `terraform apply` of the new commit on a running demo |
 | `POST /api/demos/{id}/teardown` | launcher or admin | start `terraform destroy` |
 
+Each demo in `GET /api/demos` and `GET /api/demos/{id}` has a `state` that, besides
+the stored fields, says `canUpdate` (the user may update it, as for teardown) and
+`updateAvailable` (the demo is `running`, follows the interface, and its `ref`
+differs from the catalog's), which is what the page uses to offer an update.
+
 ## Demo lifecycle
 
 A demo is deployed at most once at a time. Its deployment is the `DEMO#<id>` /

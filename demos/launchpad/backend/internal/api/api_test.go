@@ -14,6 +14,7 @@ import (
 	"launchpad/internal/api"
 	"launchpad/internal/auth"
 	"launchpad/internal/db"
+	"launchpad/internal/runs"
 	"launchpad/internal/testenv"
 )
 
@@ -383,5 +384,60 @@ func TestAPanicIsAJSON500(t *testing.T) {
 	r := a.call("GET", "/demos", nil, token)
 	if r.Status != 500 || errorCode(r) != "internal" || r.body["error"].(map[string]any)["message"] != "Something went wrong" {
 		t.Fatalf("%d %v", r.Status, r.body)
+	}
+}
+
+func TestAnUpdateIsOfferedForANewCommitAndAppliedOnRequest(t *testing.T) {
+	a := newApp(t)
+	token := a.token()
+	if r := a.call("POST", "/demos/plain/update", nil, ""); r.Status != 401 {
+		t.Fatalf("an update without a session answered %d", r.Status)
+	}
+	if r := a.call("POST", "/demos/plain/update", nil, token); r.Status != 404 {
+		t.Fatalf("an update of a demo that is not deployed answered %d", r.Status)
+	}
+	if r := a.call("POST", "/demos/plain/launch", nil, token); r.Status != 200 {
+		t.Fatalf("launch answered %d", r.Status)
+	}
+	run, err := runs.GetRaw(ctx, a.Services, "plain")
+	if err != nil || run == nil {
+		t.Fatalf("%v, %v", run, err)
+	}
+	if ok, err := runs.Finish(ctx, a.Services, "plain", run.RunID, runs.Running, runs.Outcome{URL: "http://x"}); !ok || err != nil {
+		t.Fatalf("%v, %v", ok, err)
+	}
+	stateOf := func(r reply) map[string]any {
+		t.Helper()
+		m, _ := r.body["state"].(map[string]any)
+		if m == nil {
+			t.Fatalf("%d %v", r.Status, r.body)
+		}
+		return m
+	}
+	if got := stateOf(a.call("GET", "/demos/plain", nil, token)); got["updateAvailable"] != false || got["canUpdate"] != true {
+		t.Fatalf("state %v", got)
+	}
+	if r := a.call("POST", "/demos/plain/update", nil, token); r.Status != 409 || errorCode(r) != "up_to_date" {
+		t.Fatalf("%d %v", r.Status, r.body)
+	}
+
+	const newSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	a.GitHub.AddRepoAt("owner/repo", newSHA, map[string]string{"demos/pims/tf/main.tf": testenv.CloudTF, "demos/plain/tf/main.tf": testenv.GoodTF + "# changed\n"})
+	if r := a.call("POST", "/demos/refresh", nil, token); r.Status != 200 {
+		t.Fatalf("refresh answered %d", r.Status)
+	}
+	if got := stateOf(a.call("GET", "/demos/plain", nil, token)); got["updateAvailable"] != true {
+		t.Fatalf("state %v", got)
+	}
+	r := a.call("POST", "/demos/plain/update", nil, token)
+	got := stateOf(r)
+	if r.Status != 200 || got["status"] != "updating" || got["ref"] != newSHA || got["updateAvailable"] != false {
+		t.Fatalf("%d %v", r.Status, r.body)
+	}
+	if r := a.call("POST", "/demos/plain/update", nil, token); r.Status != 409 || errorCode(r) != "not_updatable" {
+		t.Fatalf("%d %v", r.Status, r.body)
+	}
+	if r := a.call("POST", "/demos/plain/update", nil, token, "x-launchpad", "0"); r.Status != 403 {
+		t.Fatalf("an update without the CSRF header answered %d", r.Status)
 	}
 }

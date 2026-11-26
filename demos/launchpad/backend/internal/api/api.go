@@ -85,6 +85,7 @@ var routes = []route{
 	newRoute("POST", "/demos/refresh", refreshDemos),
 	newRoute("GET", "/demos/{id}", getDemo),
 	newRoute("POST", "/demos/{id}/launch", launch),
+	newRoute("POST", "/demos/{id}/update", update),
 	newRoute("POST", "/demos/{id}/teardown", teardown),
 }
 
@@ -275,6 +276,10 @@ type stateView struct {
 	UpdatedAt   int64   `json:"updatedAt"`
 	Ref         string  `json:"ref"`
 	CanTearDown bool    `json:"canTearDown"`
+	// CanUpdate is whether the user may update the demo. It is who may tear it down.
+	CanUpdate bool `json:"canUpdate"`
+	// UpdateAvailable is whether a running demo is at an older commit than the catalog's.
+	UpdateAvailable bool `json:"updateAvailable"`
 }
 
 type demoView struct {
@@ -303,6 +308,8 @@ func newDemoView(user *users.User, demo catalog.Demo, state *runs.Public, withLo
 			UpdatedAt: state.UpdatedAt, Ref: state.Ref,
 			CanTearDown: user.Role == users.Admin || user.Email == state.LaunchedBy,
 		}
+		view.State.CanUpdate = view.State.CanTearDown
+		view.State.UpdateAvailable = state.Status == runs.Running && demo.Valid && state.Ref != demo.Ref
 		if withLog {
 			view.State.LogTail = &state.LogTail
 		}
@@ -386,6 +393,17 @@ func teardown(ctx context.Context, svc *services.Services, req *Request, params 
 		return Response{}, err
 	}
 	if _, err := runs.RequestTeardown(ctx, svc, params["id"], user); err != nil {
+		return Response{}, err
+	}
+	return demoResponse(ctx, svc, user, params["id"])
+}
+
+func update(ctx context.Context, svc *services.Services, req *Request, params map[string]string) (Response, error) {
+	user, err := requireUser(ctx, svc, req)
+	if err != nil {
+		return Response{}, err
+	}
+	if _, err := runs.RequestUpdate(ctx, svc, params["id"], user); err != nil {
 		return Response{}, err
 	}
 	return demoResponse(ctx, svc, user, params["id"])
