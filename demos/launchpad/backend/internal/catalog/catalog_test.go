@@ -216,6 +216,34 @@ func TestLongNamesAndDescriptionsAreCut(t *testing.T) {
 	}
 }
 
+func TestTagsAreCleanedUp(t *testing.T) {
+	env := testenv.New(t)
+	env.GitHub.AddRepo(map[string]string{
+		"demos/a/tf/main.tf": testenv.GoodTF, "demos/a/demo.json": `{"tags": ["Apache Kafka", " Tableflow ", "Apache Kafka", "", 7, null, "` + repeat("x", 90) + `"]}`,
+		"demos/b/tf/main.tf": testenv.GoodTF, "demos/b/demo.json": `{"tags": "Apache Kafka"}`,
+		"demos/c/tf/main.tf": testenv.GoodTF, "demos/c/demo.json": `{"tags": ["1","2","3","4","5","6","7","8","9","10"]}`,
+		"demos/d/tf/main.tf": testenv.GoodTF,
+	})
+	demos, err := catalog.Refresh(ctx, env.Services)
+	if err != nil || len(demos) != 4 {
+		t.Fatalf("%v, %v", demos, err)
+	}
+	a, b, c, d := demos[0], demos[1], demos[2], demos[3]
+	if want := []string{"Apache Kafka", "Tableflow", repeat("x", 40)}; !slices.Equal(a.Tags, want) {
+		t.Errorf("a: %q", a.Tags)
+	}
+	if b.Tags == nil || len(b.Tags) != 0 || d.Tags == nil || len(d.Tags) != 0 {
+		t.Errorf("b: %#v, d: %#v", b.Tags, d.Tags)
+	}
+	if len(c.Tags) != 8 {
+		t.Errorf("c: %q", c.Tags)
+	}
+	got, _ := catalog.Get(ctx, env.Services, "a")
+	if got == nil || !slices.Equal(got.Tags, a.Tags) {
+		t.Errorf("the cached demo lost its tags: %+v", got)
+	}
+}
+
 func repeat(s string, n int) string {
 	out := ""
 	for range n {

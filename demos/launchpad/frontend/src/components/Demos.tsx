@@ -15,9 +15,10 @@ const LABEL: Record<DemoStatus, string> = {
 interface Props {
   user: User;
   onNeedCredentials: () => void;
+  onShowLog: (id: string) => void;
 }
 
-export function Demos({user, onNeedCredentials}: Props) {
+export function Demos({user, onNeedCredentials, onShowLog}: Props) {
   const [demos, setDemos] = useState<Demo[] | null>(null);
   const [error, setError] = useState('');
 
@@ -66,7 +67,7 @@ export function Demos({user, onNeedCredentials}: Props) {
       {demos && demos.length === 0 && <p className="muted">No demos were found in the repository.</p>}
       <div className="cards">
         {demos?.map((d) => (
-          <DemoCard key={d.id} demo={d} user={user} onChange={replace} onNeedCredentials={onNeedCredentials} />
+          <DemoCard key={d.id} demo={d} user={user} onChange={replace} onNeedCredentials={onNeedCredentials} onShowLog={onShowLog} />
         ))}
       </div>
     </section>
@@ -78,36 +79,19 @@ interface CardProps {
   user: User;
   onChange: (d: Demo) => void;
   onNeedCredentials: () => void;
+  onShowLog: (id: string) => void;
 }
 
-function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
+function DemoCard({demo, user, onChange, onNeedCredentials, onShowLog}: CardProps) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [confirming, setConfirming] = useState(false);
-  const [showLog, setShowLog] = useState(false);
-  const [log, setLog] = useState('');
 
   const state = demo.state;
   const transient = !!state && BUSY.includes(state.status);
   const hasCredentials = user.credentials?.configured ?? false;
   const blocked = !demo.valid || (demo.needsConfluent && !hasCredentials);
-
-  useEffect(() => {
-    if (!showLog) return;
-    let live = true;
-    const read = async () => {
-      try {
-        const d = await api.demo(demo.id);
-        if (live) setLog(d.state?.logTail ?? '');
-      } catch {
-        // The card's own refresh reports connection problems.
-      }
-    };
-    void read();
-    const t = transient ? setInterval(read, 4000) : undefined;
-    return () => { live = false; if (t) clearInterval(t); };
-  }, [showLog, transient, demo.id, state?.updatedAt]);
 
   // What a message said is about the card as it was.
   useEffect(() => { setError(''); setNotice(''); }, [state?.status, state?.ref]);
@@ -143,6 +127,11 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
         {state && <span className={`pill ${state.status}`}>{LABEL[state.status]}{transient ? '…' : ''}</span>}
       </header>
       {demo.description && <p>{demo.description}</p>}
+      {demo.tags && demo.tags.length > 0 && (
+        <ul className="tags" aria-label="Confluent Cloud products">
+          {demo.tags.map((tag) => <li key={tag} className="tag">{tag}</li>)}
+        </ul>
+      )}
       <p className="muted small">
         {commitLabel}<code title={shown}>{shown.slice(0, 7)}</code>
         {state
@@ -214,9 +203,8 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
             <button disabled={working} onClick={() => setConfirming(true)}>Tear down</button>
           )
         )}
-        {state && <button className="link" onClick={() => setShowLog((s) => !s)}>{showLog ? 'Hide log' : 'Show log'}</button>}
+        {state && <button className="link" onClick={() => onShowLog(demo.id)}>Show log</button>}
       </div>
-      {showLog && <pre className="log" aria-label={`${demo.name} log`}>{log || 'No output yet.'}</pre>}
     </article>
   );
 }

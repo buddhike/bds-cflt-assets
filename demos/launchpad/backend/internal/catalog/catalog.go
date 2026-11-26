@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -22,6 +23,8 @@ const MainBranch = "main"
 const (
 	maxName        = 80
 	maxDescription = 500
+	maxTags        = 8
+	maxTag         = 40
 	partition      = "CATALOG"
 	demoPrefix     = "DEMO#"
 )
@@ -34,8 +37,11 @@ type Demo struct {
 	ID          string `dynamodbav:"id" json:"id"`
 	Name        string `dynamodbav:"name" json:"name"`
 	Description string `dynamodbav:"description" json:"description"`
-	Path        string `dynamodbav:"path" json:"path"`
-	Ref         string `dynamodbav:"ref" json:"ref"`
+	// Tags name the Confluent Cloud products the demo shows, from its demo.json.
+	// Items cached before tags existed have none.
+	Tags []string `dynamodbav:"tags" json:"tags"`
+	Path string   `dynamodbav:"path" json:"path"`
+	Ref  string   `dynamodbav:"ref" json:"ref"`
 	// Latest is whether Ref was the tip of MainBranch when the catalog was read.
 	Latest bool `dynamodbav:"latest" json:"latest"`
 	// Version is Git's id of the demo's directory at Ref. Unlike Ref, which is the
@@ -149,6 +155,7 @@ func describe(ctx context.Context, svc *services.Services, sha, id, path string,
 	var info struct {
 		Name        any `json:"name"`
 		Description any `json:"description"`
+		Tags        any `json:"tags"`
 	}
 	if kinds[path+"/demo.json"] == "blob" {
 		raw, err := github.Raw(ctx, svc, sha, path+"/demo.json")
@@ -158,7 +165,7 @@ func describe(ctx context.Context, svc *services.Services, sha, id, path string,
 		// A demo.json that is not an object is ignored, like one that is not JSON.
 		if err := json.Unmarshal([]byte(raw), &info); err != nil {
 			svc.Log.Warn("Ignoring demo.json that is not valid JSON", "path", path)
-			info.Name, info.Description = nil, nil
+			info.Name, info.Description, info.Tags = nil, nil, nil
 		}
 	}
 
@@ -188,6 +195,7 @@ func describe(ctx context.Context, svc *services.Services, sha, id, path string,
 		ID:             id,
 		Name:           truncate(name, maxName),
 		Description:    truncate(text(info.Description), maxDescription),
+		Tags:           tags(info.Tags),
 		Path:           path,
 		Ref:            sha,
 		Valid:          iface.Valid(),
@@ -201,6 +209,24 @@ func describe(ctx context.Context, svc *services.Services, sha, id, path string,
 func text(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// tags is a demo.json "tags" value as a short list of distinct, non-empty
+// strings. Anything that is not an array is ignored, as are its entries that are
+// not strings, and the list is capped because the card has room for only a few.
+func tags(v any) []string {
+	out := []string{}
+	list, _ := v.([]any)
+	for _, item := range list {
+		tag := strings.TrimSpace(text(item))
+		if tag == "" || slices.Contains(out, tag) {
+			continue
+		}
+		if out = append(out, truncate(tag, maxTag)); len(out) == maxTags {
+			break
+		}
+	}
+	return out
 }
 
 func truncate(s string, max int) string {

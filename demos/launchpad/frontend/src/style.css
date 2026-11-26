@@ -215,6 +215,20 @@ nav { display: flex; gap: .25rem; flex-wrap: wrap; flex: 1; }
   * { transition: none !important; }
 }
 
+.tags { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .75rem; padding: 0; list-style: none; }
+.tag {
+  padding: .1rem .6rem; font-size: .76rem; font-weight: 550; white-space: nowrap;
+  color: var(--accent); background: var(--accent-soft); border-radius: 999px;
+}
+
+/* ---- a demo's log, on its own page ---- */
+.page.wide { max-width: none; }
+.log-view { display: flex; flex-direction: column; height: calc(100vh - 7.5rem); min-height: 16rem; }
+.log-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; margin-bottom: 1rem; }
+.log-head h2 { margin: 0; font-size: 1.25rem; overflow-wrap: anywhere; }
+.log-head .grow { flex: 1; }
+.log-view .log { flex: 1; min-height: 0; max-height: none; margin: 0; font-size: .82rem; }
+
 .log {
   margin: .9rem 0 0; padding: .9rem 1rem; max-height: 18rem; overflow: auto;
   background: var(--log-bg); color: var(--log-text);

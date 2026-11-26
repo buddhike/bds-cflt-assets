@@ -42,6 +42,8 @@ export interface Demo {
   id: string;
   name: string;
   description: string;
+  /** The Confluent Cloud products the demo shows. Absent from an older server. */
+  tags?: string[];
   /** The commit the demo was read at. */
   ref: string;
   /** Whether `ref` was the tip of the main branch when the repository was last read. */

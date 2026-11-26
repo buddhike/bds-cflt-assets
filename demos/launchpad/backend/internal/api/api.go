@@ -286,6 +286,7 @@ type demoView struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	Description    string     `json:"description"`
+	Tags           []string   `json:"tags"`
 	Ref            string     `json:"ref"`
 	Latest         bool       `json:"latest"`
 	Valid          bool       `json:"valid"`
@@ -296,11 +297,14 @@ type demoView struct {
 
 func newDemoView(user *users.User, demo catalog.Demo, state *runs.Public, withLog bool) demoView {
 	view := demoView{
-		ID: demo.ID, Name: demo.Name, Description: demo.Description, Ref: demo.Ref, Latest: demo.Latest, Valid: demo.Valid,
+		ID: demo.ID, Name: demo.Name, Description: demo.Description, Tags: demo.Tags, Ref: demo.Ref, Latest: demo.Latest, Valid: demo.Valid,
 		Problems: demo.Problems, NeedsConfluent: demo.NeedsConfluent,
 	}
 	if view.Problems == nil {
 		view.Problems = []string{}
+	}
+	if view.Tags == nil { // a demo cached before tags existed
+		view.Tags = []string{}
 	}
 	if state != nil {
 		view.State = &stateView{
