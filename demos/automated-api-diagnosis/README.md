@@ -32,6 +32,14 @@ limit is `EmitAfterGap`, a custom Flink function whose Java project is in
 [udf/emit-after-gap](udf/emit-after-gap). A GitHub workflow publishes its jar as a release
 and Terraform downloads it, so there is nothing to build or commit by hand.
 
+## The image
+
+`.github/workflows/automated-api-diagnosis-image.yml` publishes
+`ghcr.io/<owner>/automated-api-diagnosis` on every push, tagged with the bare commit SHA
+(no `sha-` prefix), the branch name, and `latest` on the default branch. Launchpad passes
+the commit it downloaded the demo at as `launchpad_ref`, and Terraform uses it as the tag,
+so a launch or an update runs the image of that commit. Set `image_tag` to use another tag.
+
 ## Develop
 
 ```sh
