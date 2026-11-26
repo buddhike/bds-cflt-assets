@@ -1,8 +1,7 @@
 # Launchpad
 
-Launches demos into an AWS account and tears them down again. The design is in
-[docs/specs/002_design.md](docs/specs/002_design.md), which implements
-[001_overview.md](docs/specs/001_overview.md).
+Launches demos into an AWS account, updates them when their code changes, and
+tears them down again. The design is in [docs/specs/001_design.md](docs/specs/001_design.md).
 
 * Backend: Go on AWS Lambda, DynamoDB, SNS, Secrets Manager, KMS. See [backend/](backend).
 * Front end: React. See [frontend/](frontend).
@@ -64,6 +63,14 @@ before running the script.
    you want needs one.
 3. **Launch** a demo. When it is running, **Open demo** goes to its address.
    **Tear down** deletes everything it created.
+4. To change a demo that is running, push the change to the branch demos are
+   read from (`main` unless you set `DemosRef`), then click **Update** on its
+   card. The card says when a newer commit is available. Launchpad re-reads the
+   repository, so the commit you just pushed is the one that is applied. It runs
+   `terraform apply` of the new code over the demo that is running, and does not
+   tear it down first. If the update fails, **Retry update** tries again with the
+   newest commit, and **Tear down** is still there. Only the person who launched
+   a demo, or the admin, can update it.
 
 Everything Launchpad creates carries the tag `launchpad:managed=true`.
 Everything a demo creates is also tagged `launchpad:demo=<id>`.
@@ -98,7 +105,9 @@ And it reads this output:
 Do not declare a `backend`. Launchpad uses an S3 backend and keeps state at
 `demos/<id>/terraform.tfstate` in the state bucket. Runs are limited to 15
 minutes per Lambda invocation, but Launchpad resumes them, so a slow `apply` is
-fine. Make sure `apply` and `destroy` are safe to repeat.
+fine. Make sure `apply` and `destroy` are safe to repeat. An update is a new `apply`
+over the live resources, so check `terraform plan` for changes that destroy and
+create a resource before you merge a change to a demo that people have running.
 
 ## Develop
 

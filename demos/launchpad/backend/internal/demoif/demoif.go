@@ -1,4 +1,4 @@
-// Package demoif checks the interface a demo's Terraform must implement. See docs/specs/002_design.md.
+// Package demoif checks the interface a demo's Terraform must implement. See docs/specs/001_design.md.
 package demoif
 
 import (

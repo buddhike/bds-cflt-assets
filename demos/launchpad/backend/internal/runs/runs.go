@@ -2,7 +2,7 @@
 //
 // One item per demo holds its state. Every change is a conditional write, so two
 // clicks, or a stale runner, cannot start or finish the wrong run. See the state
-// machine in docs/specs/002_design.md.
+// machine in docs/specs/001_design.md.
 package runs
 
 import (
