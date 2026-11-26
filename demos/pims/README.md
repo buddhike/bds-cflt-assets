@@ -36,8 +36,8 @@ the parts fit, and the order Terraform and the server set things up in, is in
   `ghcr.io/<owner>/pims-server`, `pims-duckdb` and `pims-connect`. GitHub creates
   packages as private, so make each one public once, or give Terraform a
   registry secret (`registry_credentials_secret_arn`).
-* The workflow tags every push with its commit, and `latest` on the default
-  branch. Launchpad passes the commit it downloaded the demo at (`launchpad_ref`),
+* The workflow tags every push with its bare commit SHA (no `sha-` prefix), its
+  branch name, and `latest` on the default branch. Launchpad passes the commit it downloaded the demo at (`launchpad_ref`),
   and Terraform uses it as the image tag, so a launch or an update runs the images
   of exactly that commit. To launch an unmerged branch, point the stack's
   `DemosRef` at it. Set `image_tag` to use another tag.
