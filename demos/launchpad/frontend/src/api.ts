@@ -14,7 +14,14 @@ export interface User {
   credentials?: Credentials;
 }
 
-export type DemoStatus = 'launching' | 'running' | 'launch_failed' | 'tearing_down' | 'teardown_failed';
+export type DemoStatus =
+  | 'launching'
+  | 'running'
+  | 'launch_failed'
+  | 'updating'
+  | 'update_failed'
+  | 'tearing_down'
+  | 'teardown_failed';
 
 export interface DemoState {
   status: DemoStatus;
@@ -23,8 +30,12 @@ export interface DemoState {
   logTail?: string;
   launchedBy: string;
   updatedAt: number;
+  /** The commit that was applied, or is being applied. */
   ref: string;
   canTearDown: boolean;
+  canUpdate: boolean;
+  /** A running demo is at an older commit than the one now in the repository. */
+  updateAvailable: boolean;
 }
 
 export interface Demo {
@@ -81,6 +92,7 @@ export const api = {
   demo: (id: string) => call<Demo>('GET', `/demos/${encodeURIComponent(id)}`),
   refreshDemos: () => call<{demos: Demo[]}>('POST', '/demos/refresh'),
   launch: (id: string) => call<Demo>('POST', `/demos/${encodeURIComponent(id)}/launch`),
+  update: (id: string) => call<Demo>('POST', `/demos/${encodeURIComponent(id)}/update`),
   teardown: (id: string) => call<Demo>('POST', `/demos/${encodeURIComponent(id)}/teardown`),
   credentials: () => call<Credentials>('GET', '/credentials'),
   saveCredentials: (apiKey: string, apiSecret: string) =>

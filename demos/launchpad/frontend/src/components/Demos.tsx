@@ -1,11 +1,13 @@
 import {useCallback, useEffect, useState} from 'react';
 import {api, Demo, DemoStatus, errorText, safeUrl, User} from '../api';
 
-const BUSY: DemoStatus[] = ['launching', 'tearing_down'];
+const BUSY: DemoStatus[] = ['launching', 'updating', 'tearing_down'];
 const LABEL: Record<DemoStatus, string> = {
   launching: 'Launching',
   running: 'Running',
   launch_failed: 'Launch failed',
+  updating: 'Updating',
+  update_failed: 'Update failed',
   tearing_down: 'Tearing down',
   teardown_failed: 'Tear down failed',
 };
@@ -55,7 +57,7 @@ export function Demos({user, onNeedCredentials}: Props) {
       <div className="section-head">
         <div>
           <h2>Demos</h2>
-          <p className="muted">Launch a demo into this AWS account, and tear it down when you are done.</p>
+          <p className="muted">Launch a demo into this AWS account, update it when its code changes, and tear it down when you are done.</p>
         </div>
         {user.role === 'admin' && <button onClick={refresh}>Re-read repository</button>}
       </div>
@@ -120,6 +122,8 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
   }
 
   const url = state?.url ? safeUrl(state.url) : null;
+  // A deployed demo is at the commit that was applied, which may be older than the repository's.
+  const shown = state ? state.ref : demo.ref;
 
   return (
     <article className="card">
@@ -130,8 +134,10 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
       </header>
       {demo.description && <p>{demo.description}</p>}
       <p className="muted small">
-        Commit <code title={demo.ref}>{demo.ref.slice(0, 7)}</code>
-        {' · '}{demo.latest ? 'Latest on main' : 'Not the latest on main'}
+        {state ? 'Running commit ' : 'Commit '}<code title={shown}>{shown.slice(0, 7)}</code>
+        {state
+          ? state.updateAvailable && <>{' · '}Newer commit <code title={demo.ref}>{demo.ref.slice(0, 7)}</code> available</>
+          : <>{' · '}{demo.latest ? 'Latest on main' : 'Not the latest on main'}</>}
       </p>
 
       {!demo.valid && (
@@ -156,6 +162,16 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
         )}
         {state?.status === 'running' && url && (
           <a className="button primary" href={url} target="_blank" rel="noopener noreferrer">Open demo</a>
+        )}
+        {state?.status === 'running' && state.updateAvailable && state.canUpdate && (
+          <button disabled={working || !demo.valid} onClick={() => act(() => api.update(demo.id))}>
+            Update to {demo.ref.slice(0, 7)}
+          </button>
+        )}
+        {state?.status === 'update_failed' && state.canUpdate && (
+          <button className="primary" disabled={working || !demo.valid} onClick={() => act(() => api.update(demo.id))}>
+            Retry update
+          </button>
         )}
         {state?.status === 'running' && !url && <span className="muted">No address was published.</span>}
         {state?.status === 'launch_failed' && (

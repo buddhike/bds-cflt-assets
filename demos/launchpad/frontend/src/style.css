@@ -206,9 +206,9 @@ nav { display: flex; gap: .25rem; flex-wrap: wrap; flex: 1; }
 }
 .pill::before { content: ''; width: .45rem; height: .45rem; border-radius: 50%; background: var(--tone); }
 .pill.running { --tone: var(--ok); }
-.pill.launching, .pill.tearing_down { --tone: var(--warn); }
-.pill.launching::before, .pill.tearing_down::before { animation: pulse 1.4s ease-in-out infinite; }
-.pill.launch_failed, .pill.teardown_failed { --tone: var(--danger); }
+.pill.launching, .pill.updating, .pill.tearing_down { --tone: var(--warn); }
+.pill.launching::before, .pill.updating::before, .pill.tearing_down::before { animation: pulse 1.4s ease-in-out infinite; }
+.pill.launch_failed, .pill.update_failed, .pill.teardown_failed { --tone: var(--danger); }
 @keyframes pulse { 50% { opacity: .25; transform: scale(.8); } }
 @media (prefers-reduced-motion: reduce) {
   .pill::before { animation: none !important; }
