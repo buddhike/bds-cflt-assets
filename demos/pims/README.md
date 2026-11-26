@@ -36,11 +36,11 @@ the parts fit, and the order Terraform and the server set things up in, is in
   `ghcr.io/<owner>/pims-server`, `pims-duckdb` and `pims-connect`. GitHub creates
   packages as private, so make each one public once, or give Terraform a
   registry secret (`registry_credentials_secret_arn`).
-* `latest` is published from the default branch. Launchpad passes a demo only
-  its standard variables, so `image_tag` is whatever default `tf/variables.tf`
-  has. To launch the images of an unmerged branch, set that default to the branch
-  name (the workflow tags each push with its branch and commit) on that branch,
-  and point the stack's `DemosRef` at it.
+* The workflow tags every push with its commit, and `latest` on the default
+  branch. Launchpad passes the commit it downloaded the demo at (`launchpad_ref`),
+  and Terraform uses it as the image tag, so a launch or an update runs the images
+  of exactly that commit. To launch an unmerged branch, point the stack's
+  `DemosRef` at it. Set `image_tag` to use another tag.
 * The link is HTTPS, on a `*.cloudfront.net` name, and carries a random access
   token. CloudFront reaches an internal load balancer through a VPC origin. There
   is no IP allow list.

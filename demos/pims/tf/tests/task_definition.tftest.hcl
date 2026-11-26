@@ -153,6 +153,22 @@ run "task_definition" {
   }
 }
 
+run "images_follow_the_commit" {
+  command = apply
+
+  variables {
+    launchpad_ref = "0123456789abcdef0123456789abcdef01234567"
+  }
+
+  assert {
+    condition = alltrue([
+      for c in jsondecode(aws_ecs_task_definition.pims.container_definitions) :
+      c.name == "mysql" || endswith(c.image, ":0123456789abcdef0123456789abcdef01234567")
+    ])
+    error_message = "the three images are the ones of the commit Launchpad downloaded"
+  }
+}
+
 run "private_registry" {
   command = apply
 

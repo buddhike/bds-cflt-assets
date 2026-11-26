@@ -9,6 +9,7 @@
 data "aws_partition" "current" {}
 
 locals {
+  image_tag  = coalesce(var.image_tag, var.launchpad_ref, "latest")
   secret_arn = aws_secretsmanager_secret.pims.arn
   # A secret's JSON key as a container secret: <arn>:<key>::
   from_secret = { for k in [
@@ -203,7 +204,7 @@ resource "aws_ecs_task_definition" "pims" {
     },
     merge({
       name        = "connect"
-      image       = "${var.image_registry}/pims-connect:${var.image_tag}"
+      image       = "${var.image_registry}/pims-connect:${local.image_tag}"
       essential   = true
       environment = local.connect_env
       secrets     = local.connect_secrets
@@ -222,7 +223,7 @@ resource "aws_ecs_task_definition" "pims" {
     }, local.registry_auth),
     merge({
       name  = "duckdb"
-      image = "${var.image_registry}/pims-duckdb:${var.image_tag}"
+      image = "${var.image_registry}/pims-duckdb:${local.image_tag}"
       # Queries fail if it stops, but a restart of the task would drop MySQL's data,
       # so it does not take the task with it.
       essential         = false
@@ -232,7 +233,7 @@ resource "aws_ecs_task_definition" "pims" {
     }, local.registry_auth),
     merge({
       name              = "pims-server"
-      image             = "${var.image_registry}/pims-server:${var.image_tag}"
+      image             = "${var.image_registry}/pims-server:${local.image_tag}"
       essential         = true
       portMappings      = [{ containerPort = 8080, protocol = "tcp" }]
       environment       = local.app_env
