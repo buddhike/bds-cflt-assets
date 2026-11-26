@@ -30,10 +30,13 @@ const (
 	tarballTimeout = 5 * time.Minute
 )
 
-// Entry is one path of a repository tree. Type is "blob" or "tree".
+// Entry is one path of a repository tree. Type is "blob" or "tree". SHA is
+// Git's id of what is there: it changes when, and only when, a file at or below
+// the path changes.
 type Entry struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
+	SHA  string `json:"sha"`
 }
 
 // body cancels the request's context when it is closed.

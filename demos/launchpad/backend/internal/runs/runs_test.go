@@ -9,6 +9,7 @@ import (
 	"launchpad/internal/apperr"
 	"launchpad/internal/catalog"
 	"launchpad/internal/credentials"
+	"launchpad/internal/db"
 	"launchpad/internal/runs"
 	"launchpad/internal/testenv"
 	"launchpad/internal/users"
@@ -277,7 +278,7 @@ func push(env *testenv.Env, files map[string]string) {
 }
 
 var pushed = map[string]string{
-	"demos/pims/tf/main.tf": testenv.CloudTF, "demos/plain/tf/main.tf": testenv.GoodTF + "# changed\n",
+	"demos/pims/tf/main.tf": testenv.CloudTF + "# changed\n", "demos/plain/tf/main.tf": testenv.GoodTF + "# changed\n",
 }
 
 func TestUpdateAppliesTheNewCommitToARunningDemo(t *testing.T) {
@@ -501,5 +502,40 @@ func TestAnUpdateThatNoLongerNeedsConfluentCloudStillUsesTheKeyOfTheOldVersion(t
 	// The resources the old version made may have to be destroyed by this apply.
 	if st := raw(t, env, "pims"); !st.NeedsConfluent || st.CredsOwner != ann.Email {
 		t.Fatalf("state %+v", st)
+	}
+}
+
+func TestACommitThatChangesOnlyOtherDemosIsNotAnUpdate(t *testing.T) {
+	env := fixture(t)
+	launched(t, env, "plain", ann.Email)
+	// A new commit, in which only pims changed.
+	push(env, map[string]string{"demos/pims/tf/main.tf": testenv.CloudTF + "# changed\n", "demos/plain/tf/main.tf": testenv.GoodTF})
+	env.Lambda.Clear()
+	_, err := runs.RequestUpdate(ctx, env.Services, "plain", ann)
+	wantAPIError(t, err, 409, "up_to_date")
+	if len(env.Lambda.Calls()) != 0 {
+		t.Fatal("the runner was started")
+	}
+	// The catalog knows the new commit all the same, and plain is still at its own version.
+	demo, err := catalog.Get(ctx, env.Services, "plain")
+	if err != nil || demo.Ref != newSHA || demo.Version != raw(t, env, "plain").Version {
+		t.Fatalf("%+v, %v", demo, err)
+	}
+}
+
+func TestADemoLaunchedBeforeVersionsWereKeptIsComparedByCommit(t *testing.T) {
+	env := fixture(t)
+	launched(t, env, "plain", ann.Email)
+	push(env, map[string]string{"demos/pims/tf/main.tf": testenv.CloudTF, "demos/plain/tf/main.tf": testenv.GoodTF})
+	state := raw(t, env, "plain")
+	state.Version = ""
+	if err := db.PutAs(ctx, env.Services.DB, *state, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runs.RequestUpdate(ctx, env.Services, "plain", ann); err != nil || out.Status != "updating" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if got := raw(t, env, "plain").Version; got == "" {
+		t.Fatal("the update did not record the version")
 	}
 }

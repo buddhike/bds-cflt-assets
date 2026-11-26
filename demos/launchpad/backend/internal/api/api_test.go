@@ -429,6 +429,16 @@ func TestAnUpdateIsOfferedForANewCommitAndAppliedOnRequest(t *testing.T) {
 	if got := stateOf(a.call("GET", "/demos/plain", nil, token)); got["updateAvailable"] != true {
 		t.Fatalf("state %v", got)
 	}
+	// A commit that changes only another demo is not an update of this one.
+	const otherSHA = "cccccccccccccccccccccccccccccccccccccccc"
+	a.GitHub.AddRepoAt("owner/repo", otherSHA, map[string]string{"demos/pims/tf/main.tf": testenv.CloudTF + "# changed\n", "demos/plain/tf/main.tf": testenv.GoodTF})
+	if r := a.call("POST", "/demos/refresh", nil, token); r.Status != 200 {
+		t.Fatalf("refresh answered %d", r.Status)
+	}
+	if got := stateOf(a.call("GET", "/demos/plain", nil, token)); got["updateAvailable"] != false {
+		t.Fatalf("state %v", got)
+	}
+	a.GitHub.AddRepoAt("owner/repo", newSHA, map[string]string{"demos/pims/tf/main.tf": testenv.CloudTF, "demos/plain/tf/main.tf": testenv.GoodTF + "# changed\n"})
 	r := a.call("POST", "/demos/plain/update", nil, token)
 	got := stateOf(r)
 	if r.Status != 200 || got["status"] != "updating" || got["ref"] != newSHA || got["updateAvailable"] != false {

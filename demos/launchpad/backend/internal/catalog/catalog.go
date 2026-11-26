@@ -37,7 +37,10 @@ type Demo struct {
 	Path        string `dynamodbav:"path" json:"path"`
 	Ref         string `dynamodbav:"ref" json:"ref"`
 	// Latest is whether Ref was the tip of MainBranch when the catalog was read.
-	Latest         bool     `dynamodbav:"latest" json:"latest"`
+	Latest bool `dynamodbav:"latest" json:"latest"`
+	// Version is Git's id of the demo's directory at Ref. Unlike Ref, which is the
+	// whole repository's commit, it changes only when something in the demo changes.
+	Version        string   `dynamodbav:"version" json:"version"`
 	Valid          bool     `dynamodbav:"valid" json:"valid"`
 	Problems       []string `dynamodbav:"problems" json:"problems"`
 	NeedsConfluent bool     `dynamodbav:"needsConfluent" json:"needsConfluent"`
@@ -79,12 +82,14 @@ func Refresh(ctx context.Context, svc *services.Services) ([]Demo, error) {
 	}
 	base := svc.Settings.DemosPath + "/"
 	kinds := make(map[string]string, len(entries))
+	shas := make(map[string]string, len(entries))
 	paths := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if _, seen := kinds[e.Path]; !seen {
 			paths = append(paths, e.Path)
 		}
 		kinds[e.Path] = e.Type
+		shas[e.Path] = e.SHA
 	}
 	sort.Strings(paths)
 
@@ -106,6 +111,7 @@ func Refresh(ctx context.Context, svc *services.Services) ([]Demo, error) {
 			return nil, err
 		}
 		demo.Latest = sha == latest
+		demo.Version = shas[path]
 		demos = append(demos, demo)
 	}
 

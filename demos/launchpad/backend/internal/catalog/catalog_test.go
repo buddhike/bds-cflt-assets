@@ -223,3 +223,42 @@ func repeat(s string, n int) string {
 	}
 	return out
 }
+
+func TestADemosVersionChangesOnlyWhenSomethingInItDoes(t *testing.T) {
+	env := fixture(t)
+	first, err := catalog.Refresh(ctx, env.Services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := func(demos []catalog.Demo, id string) string {
+		for _, d := range demos {
+			if d.ID == id {
+				return d.Version
+			}
+		}
+		t.Fatalf("no demo %q", id)
+		return ""
+	}
+	if version(first, "pims") == "" || version(first, "pims") == version(first, "plain") {
+		t.Fatalf("versions %q and %q", version(first, "pims"), version(first, "plain"))
+	}
+
+	// A new commit that changes a file beside the Terraform of one demo, and a file of no demo.
+	changed := map[string]string{}
+	for p, c := range files {
+		changed[p] = c
+	}
+	changed["demos/pims/main.go"] = "package main // changed"
+	changed["README.md"] = "changed"
+	env.GitHub.AddRepoAt("owner/repo", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", changed)
+	second, err := catalog.Refresh(ctx, env.Services)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version(second, "pims") == version(first, "pims") {
+		t.Error("the version of pims did not change with its code")
+	}
+	if version(second, "plain") != version(first, "plain") || second[0].Ref == first[0].Ref {
+		t.Errorf("the version of plain changed, or the commit did not: %q, %q", version(second, "plain"), version(first, "plain"))
+	}
+}

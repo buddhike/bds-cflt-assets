@@ -50,6 +50,7 @@ type State struct {
 	Action         string `dynamodbav:"action"`
 	RunID          string `dynamodbav:"runId"`
 	Ref            string `dynamodbav:"ref"`
+	Version        string `dynamodbav:"version,omitempty"`
 	Path           string `dynamodbav:"path"`
 	NeedsConfluent bool   `dynamodbav:"needsConfluent"`
 	LaunchedBy     string `dynamodbav:"launchedBy"`
@@ -70,6 +71,7 @@ type Public struct {
 	LaunchedBy string `json:"launchedBy"`
 	UpdatedAt  int64  `json:"updatedAt"`
 	Ref        string `json:"ref"`
+	Version    string `json:"-"`
 }
 
 // Public is the view of a state that the API shows.
@@ -79,8 +81,18 @@ func (s *State) Public() *Public {
 	}
 	return &Public{
 		Status: s.Status, URL: s.URL, Error: s.Error, LogTail: s.LogTail,
-		LaunchedBy: s.LaunchedBy, UpdatedAt: s.UpdatedAt, Ref: s.Ref,
+		LaunchedBy: s.LaunchedBy, UpdatedAt: s.UpdatedAt, Ref: s.Ref, Version: s.Version,
 	}
+}
+
+// Behind is whether a demo that was applied at this version and commit is older than the catalog's
+// entry. It compares the demo's own version, so a commit that changes only other demos is not news. A
+// demo applied before versions were recorded, or a catalog read before then, is compared by commit.
+func Behind(version, ref string, demo *catalog.Demo) bool {
+	if version != "" && demo.Version != "" {
+		return version != demo.Version
+	}
+	return ref != demo.Ref
 }
 
 func key(demoID string) string { return "DEMO#" + demoID }
@@ -150,7 +162,7 @@ func RequestLaunch(ctx context.Context, svc *services.Services, demoID, email st
 	}
 	err = db.PutAs(ctx, svc.DB, State{
 		PK: key(demoID), SK: "STATE", Status: Launching, Action: Apply, RunID: runID,
-		Ref: demo.Ref, Path: demo.Path, NeedsConfluent: demo.NeedsConfluent,
+		Ref: demo.Ref, Version: demo.Version, Path: demo.Path, NeedsConfluent: demo.NeedsConfluent,
 		LaunchedBy: email, CredsOwner: email, Resumes: 0, UpdatedAt: svc.Now(),
 	}, db.Or(db.Absent("pk"), db.Equal("status", LaunchFailed)))
 	if errors.Is(err, db.ErrConditionFailed) {
@@ -269,7 +281,7 @@ func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, u
 	if !demo.Valid {
 		return nil, apperr.Conflict("invalid_demo", "This demo does not follow the Launchpad interface: "+strings.Join(demo.Problems, "; "))
 	}
-	if state.Status == Running && state.Ref == demo.Ref {
+	if state.Status == Running && !Behind(state.Version, state.Ref, demo) {
 		return nil, apperr.Conflict("up_to_date", "The demo is already at the latest commit")
 	}
 	// The resources that exist were made with the old code, and the new code may want a key too.
@@ -285,7 +297,7 @@ func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, u
 	}
 	previous := state.Status
 	_, err = svc.DB.Update(ctx, key(demoID), "STATE", db.Update{Set: map[string]any{
-		"status": Updating, "action": Apply, "runId": runID, "ref": demo.Ref, "path": demo.Path,
+		"status": Updating, "action": Apply, "runId": runID, "ref": demo.Ref, "version": demo.Version, "path": demo.Path,
 		"needsConfluent": needsConfluent, "credsOwner": owner, "resumes": 0,
 		"updatedAt": svc.Now(), "error": "", "logTail": "",
 	}}, db.And(

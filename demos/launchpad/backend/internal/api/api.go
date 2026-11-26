@@ -309,7 +309,7 @@ func newDemoView(user *users.User, demo catalog.Demo, state *runs.Public, withLo
 			CanTearDown: user.Role == users.Admin || user.Email == state.LaunchedBy,
 		}
 		view.State.CanUpdate = view.State.CanTearDown
-		view.State.UpdateAvailable = state.Status == runs.Running && demo.Valid && state.Ref != demo.Ref
+		view.State.UpdateAvailable = state.Status == runs.Running && demo.Valid && runs.Behind(state.Version, state.Ref, &demo)
 		if withLog {
 			view.State.LogTail = &state.LogTail
 		}

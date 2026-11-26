@@ -67,9 +67,9 @@ DynamoDB Local. That is what keeps `db.Memory` honest.
 | `USER#<email>` | `CREDS` | `ciphertext` (KMS), `apiKeyHint` (last 4), `updatedAt` |
 | `OTP#owner` | `OTP` | `salt`, `hash`, `attempts`, `sentAt`, `hourStart`, `hourCount`, `ttl` |
 | `SESSION#<sha256 token>` | `SESSION` | `email`, `ttl` |
-| `CATALOG` | `DEMO#<id>` | `name`, `description`, `path`, `ref`, `latest`, `needsConfluent` |
+| `CATALOG` | `DEMO#<id>` | `name`, `description`, `path`, `ref`, `version`, `latest`, `needsConfluent` |
 | `CATALOG` | `META` | `refreshedAt`, `ref` |
-| `DEMO#<id>` | `STATE` | `status`, `runId`, `ref`, `launchedBy`, `credsOwner`, `url`, `error`, `logTail`, `resumes`, `updatedAt` |
+| `DEMO#<id>` | `STATE` | `status`, `runId`, `ref`, `version`, `launchedBy`, `credsOwner`, `url`, `error`, `logTail`, `resumes`, `updatedAt` |
 
 Time to live (`ttl`) is enabled on the table, so OTPs and sessions expire.
 Reads of an expired item must still check `ttl` because deletion is lazy.
@@ -111,8 +111,8 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 
 Each demo in `GET /api/demos` and `GET /api/demos/{id}` has a `state` that, besides
 the stored fields, says `canUpdate` (the user may update it, as for teardown) and
-`updateAvailable` (the demo is `running`, follows the interface, and its `ref`
-differs from the catalog's), which is what the page uses to offer an update.
+`updateAvailable` (the demo is `running`, follows the interface, and its `version`
+is behind the catalog's), which is what the page uses to offer an update.
 
 ## Demo lifecycle
 
@@ -189,12 +189,17 @@ resumed slices, so one run never changes version part way through.
 
 ### Update
 
-A demo is updated when its code, in `tf/` or beside it, has changed in the
-repository after it was launched. The `STATE` item keeps the `ref` that was
-applied, and the catalog entry has the `ref` that is at the tip of
-`DemosRepoRef`. When the two differ, the page says an update is available. A
-demo that is deployed stays on the commit it was launched or last updated at
-until somebody asks for an update.
+A demo is updated when anything in its directory has changed in the repository
+after it was launched. The repository is shared by every demo, so its commit
+`ref` changes with every push and says nothing about one demo. Each catalog entry
+therefore also has a `version`, Git's id of the demo's directory at that `ref`
+(from the tree listing the refresh already reads), which changes when, and only
+when, something at or below the directory does. The `STATE` item keeps the
+`ref` and `version` that were applied. When the `version` of the catalog entry
+differs from the state's, the page says an update is available. A state or
+catalog entry without a `version`, from before versions were kept, is compared by
+`ref` instead. A demo that is deployed stays on the version it was launched or
+last updated at until somebody asks for an update.
 
 1. `POST /api/demos/{id}/update` needs the person who launched the demo, or the
    admin, as teardown does (otherwise `403`). It answers `404` when the demo is not
@@ -206,15 +211,16 @@ until somebody asks for an update.
    cached catalog.
 3. It refuses a demo that is no longer in the repository (`409 demo_removed`:
    tear it down) and one that no longer follows the interface (`invalid_demo`). It
-   refuses a `running` demo whose `ref` is already the new one (`409
+   refuses a `running` demo whose `version` is already the new one (`409
    up_to_date`), so a click that has nothing to apply does not start a run. An
    `update_failed` demo can always be retried, even at the same `ref`.
 4. A demo that needs Confluent Cloud, at the old commit or the new one, is
    applied with the key of the person who launched it, or else the key of the
    person updating it, and `credentials_required` if neither saved one. A
    `credsOwner` already recorded is not enough: the key may have been deleted since.
-5. It sets `status=updating` with a fresh `runId`, and copies `ref`, `path` and
-   `needsConfluent` from the new catalog entry. `launchedBy` and `url` are left as
+5. It sets `status=updating` with a fresh `runId`, and copies `ref`, `version`
+   and `path` from the new catalog entry. `needsConfluent` becomes true if the old
+   code or the new code needs a key, and stays true after that. `launchedBy` and `url` are left as
    they are, and `error` and the log are cleared. The write succeeds only from
    `running` or `update_failed`, otherwise the answer is `409 not_updatable`.
 6. The runner applies the new commit (see [Runner](#runner)). The outcome is

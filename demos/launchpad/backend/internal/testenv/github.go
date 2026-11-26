@@ -4,7 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -80,6 +83,7 @@ func (g *GitHub) AddRepoAt(repo, sha string, files map[string]string) {
 	type entry struct {
 		Path string `json:"path"`
 		Type string `json:"type"`
+		SHA  string `json:"sha"`
 	}
 	var entries []entry
 	dirs := map[string]bool{}
@@ -93,14 +97,31 @@ func (g *GitHub) AddRepoAt(repo, sha string, files map[string]string) {
 		for i := 1; i < len(parts); i++ {
 			dirs[strings.Join(parts[:i], "/")] = true
 		}
-		entries = append(entries, entry{p, "blob"})
+		entries = append(entries, entry{p, "blob", treeSHA(files, p)})
 		g.Route("https://raw.githubusercontent.com/"+repo+"/"+sha+"/"+p, []byte(files[p]))
 	}
 	for d := range dirs {
-		entries = append(entries, entry{d, "tree"})
+		entries = append(entries, entry{d, "tree", treeSHA(files, d+"/")})
 	}
 	tree, _ := json.Marshal(map[string]any{"tree": entries, "truncated": false})
 	g.Route("https://api.github.com/repos/"+repo+"/git/trees/"+sha+"?recursive=1", tree)
+}
+
+// treeSHA is a stand-in for Git's id of a file, or of a directory when prefix ends in a slash:
+// it changes when, and only when, something at or below the path does.
+func treeSHA(files map[string]string, prefix string) string {
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		if p == prefix || (strings.HasSuffix(prefix, "/") && strings.HasPrefix(p, prefix)) {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	h := sha1.New()
+	for _, p := range paths {
+		fmt.Fprintf(h, "%s\x00%s\x00", p, files[p])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Member is one entry of a tarball.
