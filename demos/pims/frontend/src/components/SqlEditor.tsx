@@ -18,36 +18,36 @@ const DuckDB = SQLDialect.define({
 // light and dark themes without being rebuilt.
 const theme = EditorView.theme({
   '&': {
-    color: 'var(--text-primary)', backgroundColor: 'var(--surface-1)', fontSize: '13px',
-    border: '1px solid var(--border)', borderRadius: '8px', height: '100%',
+    color: 'var(--code-text)', backgroundColor: 'var(--code-bg)', fontSize: '13px',
+    border: '1px solid var(--border)', borderRadius: 'var(--r-md)', height: '100%',
   },
   '&.cm-focused': {outline: '2px solid var(--accent)', outlineOffset: '-1px'},
-  '.cm-scroller': {fontFamily: 'var(--font-mono)', lineHeight: '1.55', overflow: 'auto'},
-  '.cm-content': {caretColor: 'var(--text-primary)', padding: '8px 0'},
+  '.cm-scroller': {fontFamily: 'var(--mono)', lineHeight: '1.55', overflow: 'auto'},
+  '.cm-content': {caretColor: 'var(--code-text)', padding: '8px 0'},
   '.cm-line': {padding: '0 12px'},
-  '.cm-cursor': {borderLeftColor: 'var(--text-primary)'},
-  '.cm-gutters': {backgroundColor: 'transparent', color: 'var(--text-muted)', border: 'none'},
+  '.cm-cursor': {borderLeftColor: 'var(--code-text)'},
+  '.cm-gutters': {backgroundColor: 'transparent', color: 'var(--code-muted)', border: 'none'},
   '.cm-lineNumbers .cm-gutterElement': {padding: '0 4px 0 12px', minWidth: '28px'},
   // Only the focused editor has a current line to point at.
   '&.cm-focused .cm-activeLine': {backgroundColor: 'color-mix(in srgb, var(--accent) 6%, transparent)'},
   '.cm-activeLine': {backgroundColor: 'transparent'},
-  '.cm-activeLineGutter': {backgroundColor: 'transparent', color: 'var(--text-secondary)'},
+  '.cm-activeLineGutter': {backgroundColor: 'transparent', color: 'var(--code-text)'},
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
     backgroundColor: 'color-mix(in srgb, var(--accent) 28%, transparent)',
   },
   '.cm-matchingBracket': {backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)', outline: 'none'},
-  '.cm-placeholder': {color: 'var(--text-muted)'},
+  '.cm-placeholder': {color: 'var(--code-muted)'},
 });
 
 const highlight = HighlightStyle.define([
-  {tag: tags.keyword, color: 'var(--syn-keyword)', fontWeight: '600'},
-  {tag: tags.typeName, color: 'var(--syn-type)'},
-  {tag: tags.standard(tags.name), color: 'var(--syn-builtin)'},
-  {tag: [tags.string, tags.special(tags.name)], color: 'var(--syn-string)'},
-  {tag: tags.special(tags.string), color: 'var(--syn-ident)'},
-  {tag: [tags.number, tags.bool, tags.null], color: 'var(--syn-number)'},
-  {tag: [tags.lineComment, tags.blockComment], color: 'var(--syn-comment)', fontStyle: 'italic'},
-  {tag: [tags.operator, tags.punctuation, tags.paren, tags.squareBracket, tags.brace], color: 'var(--text-secondary)'},
+  {tag: tags.keyword, color: 'var(--code-keyword)', fontWeight: '600'},
+  {tag: tags.typeName, color: 'var(--code-type)'},
+  {tag: tags.standard(tags.name), color: 'var(--code-builtin)'},
+  {tag: [tags.string, tags.special(tags.name)], color: 'var(--code-string)'},
+  {tag: tags.special(tags.string), color: 'var(--code-ident)'},
+  {tag: [tags.number, tags.bool, tags.null], color: 'var(--code-number)'},
+  {tag: [tags.lineComment, tags.blockComment], color: 'var(--code-muted)', fontStyle: 'italic'},
+  {tag: [tags.operator, tags.punctuation, tags.paren, tags.squareBracket, tags.brace], color: 'var(--code-muted)'},
 ]);
 
 // Marks edits the parent made, which it already knows about.

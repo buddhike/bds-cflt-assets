@@ -1,7 +1,6 @@
 import React from 'react'
 import {createRoot} from 'react-dom/client'
-import '@fontsource-variable/inter/opsz.css'
-import '@fontsource-variable/jetbrains-mono'
+import './graphite.css'
 import './style.css'
 import App from './App'
 

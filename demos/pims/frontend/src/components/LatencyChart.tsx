@@ -6,9 +6,9 @@ import {LatencyResult, LatencySample} from '../api';
 // (all-pairs safe); aqua sits under 3:1 on the light surface, so the latest
 // values are also shown as text in the tiles above the charts.
 export const SERIES = [
-  {table: 'patients', label: 'Patients', color: 'var(--series-1)'},
-  {table: 'appointments', label: 'Appointments', color: 'var(--series-2)'},
-  {table: 'visits', label: 'Visits', color: 'var(--series-3)'},
+  {table: 'patients', label: 'Patients', color: 'var(--s1)'},
+  {table: 'appointments', label: 'Appointments', color: 'var(--s2)'},
+  {table: 'visits', label: 'Visits', color: 'var(--s3)'},
 ];
 
 const M = {top: 12, right: 16, bottom: 28, left: 56};
@@ -169,7 +169,7 @@ function MetricChart({title, subtitle, samples}: {title: string; subtitle: strin
                 points={s.pts.map((p) => `${x(p.t)},${y(p.v)}`).join(' ')}
               />
               {/* The latest value gets a marker, which also shows a table with a single sample. */}
-              <circle cx={x(s.pts[s.pts.length - 1].t)} cy={y(s.pts[s.pts.length - 1].v)} r={4} fill={s.color} stroke="var(--surface-1)" strokeWidth={2}/>
+              <circle cx={x(s.pts[s.pts.length - 1].t)} cy={y(s.pts[s.pts.length - 1].v)} r={4} fill={s.color} stroke="var(--surface)" strokeWidth={2}/>
             </g>
           ))}
 
