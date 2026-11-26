@@ -1,0 +1,30 @@
+# Keeps the Graphite design system honest: every app's copy of the stylesheet is
+# the canonical one in libs/design, and its colours still pass WCAG AA.
+# See demos/launchpad/docs/specs/002_visual_design.md.
+name: Design check
+
+on:
+  push:
+    branches: [main, launchpad]
+    paths:
+      - 'libs/design/**'
+      - 'demos/*/frontend/src/graphite.css'
+      - '.github/workflows/design-check.yml'
+  pull_request:
+    paths:
+      - 'libs/design/**'
+      - 'demos/*/frontend/src/graphite.css'
+      - '.github/workflows/design-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  design:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every copy matches the canonical stylesheet
+        run: libs/design/sync.sh --check
+      - name: Colours pass WCAG AA in both themes
+        run: node libs/design/contrast.mjs
