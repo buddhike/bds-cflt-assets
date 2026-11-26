@@ -46,12 +46,6 @@ variable "registry_credentials_secret_arn" {
   default     = null
 }
 
-variable "allowed_cidr_blocks" {
-  description = "Who may reach the load balancer. The UI also needs the access token in the link, but the link travels over plain HTTP: narrow this for anything but a short demo."
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
-}
-
 variable "task_cpu" {
   description = "Fargate CPU units for the task that runs all four containers."
   type        = number
@@ -68,10 +62,4 @@ variable "partitions" {
   description = "Partitions per CDC topic."
   type        = number
   default     = 1
-}
-
-variable "wait_for_schemas" {
-  description = "Wait for Debezium to register the topic schemas before enabling Tableflow, which cannot be enabled without them. Turn this off only to render the configuration without a Confluent account, as tests/ does."
-  type        = bool
-  default     = true
 }

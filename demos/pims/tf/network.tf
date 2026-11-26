@@ -1,6 +1,7 @@
 # A small VPC of its own, so tearing the demo down leaves nothing behind. The task
 # has a public address and no NAT gateway (which would cost more than the demo):
-# only the load balancer can reach it, and the task only calls out.
+# only the load balancer can reach it, and the task only calls out. The load
+# balancer is internal and CloudFront, which speaks HTTPS to people, reaches it.
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -64,15 +65,15 @@ resource "aws_security_group" "task" {
   vpc_id      = aws_vpc.pims.id
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  for_each = toset(var.allowed_cidr_blocks)
-
-  security_group_id = aws_security_group.alb.id
-  description       = "HTTP from ${each.key}"
-  ip_protocol       = "tcp"
-  from_port         = 80
-  to_port           = 80
-  cidr_ipv4         = each.key
+# The load balancer is internal. Its only client is CloudFront, through a VPC origin
+# (see cloudfront.tf), whose network interfaces carry this security group.
+resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "HTTP from the CloudFront VPC origin"
+  ip_protocol                  = "tcp"
+  from_port                    = 80
+  to_port                      = 80
+  referenced_security_group_id = data.aws_security_group.cloudfront_vpc_origin.id
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_task" {
@@ -106,9 +107,10 @@ resource "aws_vpc_security_group_egress_rule" "task_out" {
 resource "aws_lb" "pims" {
   name               = local.name
   load_balancer_type = "application"
-  internal           = false
-  subnets            = aws_subnet.public[*].id
-  security_groups    = [aws_security_group.alb.id]
+  # No address on the internet: CloudFront reaches it from inside the VPC.
+  internal        = true
+  subnets         = aws_subnet.public[*].id
+  security_groups = [aws_security_group.alb.id]
   # The UI holds a server-sent event stream open.
   idle_timeout = 120
 }

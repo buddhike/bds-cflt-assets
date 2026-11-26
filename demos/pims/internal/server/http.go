@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -54,6 +55,9 @@ func (s *Service) Handler(assets fs.FS) http.Handler {
 	root := http.NewServeMux()
 	// The load balancer's health check carries no token.
 	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
+	// Launchpad calls this before it destroys the demo. It has no browser session, so it
+	// signs in with the access token as a bearer token, and needs no CSRF header.
+	root.Handle("POST /shutdown", securityHeaders(http.HandlerFunc(s.handleShutdown)))
 	root.Handle("/", securityHeaders(gate))
 	return root
 }
@@ -91,8 +95,10 @@ func (s *Service) gate(next http.Handler) http.Handler {
 				// back on the redirected request. Everything that changes state is a non-GET and
 				// needs the CSRF header as well.
 				SameSite: http.SameSiteLaxMode,
-				// The load balancer may speak plain HTTP, where a Secure cookie would never come back.
-				Secure: r.Header.Get("X-Forwarded-Proto") == "https",
+				// Behind CloudFront the load balancer speaks plain HTTP, so the viewer's protocol
+				// arrives in CloudFront-Forwarded-Proto. Where neither header says HTTPS (a laptop),
+				// a Secure cookie would never come back.
+				Secure: viaHTTPS(r),
 				MaxAge: 7 * 24 * 3600,
 			})
 			q := r.URL.Query()
@@ -109,6 +115,34 @@ func (s *Service) gate(next http.Handler) http.Handler {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, "PIMS needs the link Launchpad shows, which carries its access token.\n")
 	})
+}
+
+// shutdownTimeout keeps the call inside the load balancer's idle timeout, which would
+// otherwise cut it off and leave Launchpad guessing.
+const shutdownTimeout = 50 * time.Second
+
+func (s *Service) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || !equal(token, s.cfg.AccessToken) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, http.StatusUnauthorized, errors.New("the access token is required"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), shutdownTimeout)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		// 500, not 502: the gateways in front answer 502 and 504 when the app is not there at
+		// all, and Launchpad must tell "tried and failed" from "nobody to ask".
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// viaHTTPS reports whether the viewer used HTTPS, as the proxies in front say. A viewer
+// that lies only makes its own cookie Secure or not.
+func viaHTTPS(r *http.Request) bool {
+	return r.Header.Get("CloudFront-Forwarded-Proto") == "https" || r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 func securityHeaders(next http.Handler) http.Handler {

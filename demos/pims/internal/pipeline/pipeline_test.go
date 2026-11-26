@@ -482,3 +482,10 @@ func TestTitlesCanBeOverridden(t *testing.T) {
 		t.Errorf("a title without an override changed: %q", got[StepCloud])
 	}
 }
+
+func TestDisableTableflowIsNothingWithoutADep(t *testing.T) {
+	p := New(Deps{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
+	if err := p.DisableTableflow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,5 +1,6 @@
 # Confluent Cloud: the same resources the desktop app provisions, except for
-# Tableflow, which waits for the schemas (see tableflow.tf).
+# Tableflow. It cannot be enabled until Debezium has registered the topics' schemas,
+# so pims-server enables it, and disables it again before a destroy.
 
 locals {
   # Debezium routes each MySQL table to the topic of the same name.

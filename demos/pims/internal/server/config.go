@@ -38,10 +38,11 @@ type Config struct {
 	MySQLAppPassword      string
 	MySQLDebeziumPassword string
 
-	ConnectURL     string
-	AgentURL       string
-	AgentToken     string
-	TableflowParam string
+	ConnectURL string
+	AgentURL   string
+	AgentToken string
+	// TableflowAPIURL is the Confluent Cloud API. Empty means the real one; tests set it.
+	TableflowAPIURL string
 }
 
 // LogValue keeps secrets out of logs.
@@ -53,7 +54,6 @@ func (c Config) LogValue() slog.Value {
 		slog.String("mysql", net.JoinHostPort(c.MySQLHost, strconv.Itoa(c.MySQLPort))),
 		slog.String("connect", c.ConnectURL),
 		slog.String("agent", c.AgentURL),
-		slog.String("tableflow_param", c.TableflowParam),
 	)
 }
 
@@ -93,7 +93,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		ConnectURL:            opt("PIMS_CONNECT_URL", "http://127.0.0.1:8083"),
 		AgentURL:              opt("PIMS_DUCKDB_AGENT_URL", "http://127.0.0.1:8081"),
 		AgentToken:            req("PIMS_AGENT_TOKEN"),
-		TableflowParam:        req("PIMS_TABLEFLOW_PARAM"),
 	}
 	if c.AccessToken != "" && len(c.AccessToken) < MinTokenLength {
 		problems = append(problems, fmt.Sprintf("PIMS_ACCESS_TOKEN must be at least %d characters", MinTokenLength))

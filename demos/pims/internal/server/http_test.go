@@ -200,10 +200,16 @@ func TestTheLinkSetsAHardenedCookieAndHidesTheToken(t *testing.T) {
 	if strings.Contains(got.Value, r.tok) {
 		t.Error("the cookie holds the token itself")
 	}
-	res, _ = do(t, c, "GET", r.srv.URL+"/?"+AccessParam+"="+r.tok, "", map[string]string{"X-Forwarded-Proto": "https"})
-	for _, ck := range res.Cookies() {
-		if ck.Name == CookieName && !ck.Secure {
-			t.Error("the cookie is not Secure behind HTTPS")
+	for _, hdr := range []string{"X-Forwarded-Proto", "CloudFront-Forwarded-Proto"} {
+		res, _ = do(t, r.client(), "GET", r.srv.URL+"/?"+AccessParam+"="+r.tok, "", map[string]string{hdr: "https"}) // a new client: c has the cookie already
+		secure := false
+		for _, ck := range res.Cookies() {
+			if ck.Name == CookieName && ck.Secure {
+				secure = true
+			}
+		}
+		if !secure {
+			t.Errorf("the cookie is not Secure when %s says https", hdr)
 		}
 	}
 	res, body := do(t, c, "GET", r.srv.URL+"/", "", nil)

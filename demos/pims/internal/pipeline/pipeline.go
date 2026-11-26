@@ -102,6 +102,9 @@ type Deps struct {
 	StartCDC    func(ctx context.Context, out terraform.Outputs, s compose.MySQLSecrets) error
 	StopCDC     func(ctx context.Context, s compose.MySQLSecrets) error
 	WaitSchemas func(ctx context.Context, out terraform.Outputs) error
+	// DisableTableflow turns Tableflow off on the topics before their owner deletes
+	// them. Only server mode sets it: the desktop app's Terraform owns Tableflow too.
+	DisableTableflow func(ctx context.Context) error
 	// NewQuerier returns the reader of Tableflow's freshness metrics. The
 	// Metrics API takes a Cloud API key, so it gets the operator's.
 	NewQuerier func(c config.Credentials, out terraform.Outputs) (latency.Querier, error)
@@ -530,6 +533,24 @@ func (p *Pipeline) Teardown(ctx context.Context, creds config.Credentials) error
 		return err
 	}
 	p.log.Info("Teardown complete")
+	return nil
+}
+
+// DisableTableflow turns Tableflow off, so the topics can be deleted by whoever owns them.
+// It does nothing in the desktop app. Call Close first: a setup that is still running
+// could otherwise enable Tableflow again after this has disabled it.
+func (p *Pipeline) DisableTableflow(ctx context.Context) error {
+	if p.deps.DisableTableflow == nil {
+		return nil
+	}
+	if err := p.deps.DisableTableflow(ctx); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	if p.outputs != nil {
+		p.outputs.TableflowEnabled = false // the query window must not attach a catalog that is gone
+	}
+	p.mu.Unlock()
 	return nil
 }
 

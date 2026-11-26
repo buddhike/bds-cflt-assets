@@ -28,7 +28,6 @@ func fullEnv() map[string]string {
 		"PIMS_MYSQL_APP_PASSWORD":         "app-password-value",
 		"PIMS_MYSQL_DEBEZIUM_PASSWORD":    "dbz-password-value",
 		"PIMS_AGENT_TOKEN":                "agent-token-value",
-		"PIMS_TABLEFLOW_PARAM":            "/launchpad/pims/tableflow",
 	}
 }
 

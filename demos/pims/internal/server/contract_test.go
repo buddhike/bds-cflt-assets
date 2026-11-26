@@ -2,6 +2,7 @@ package server
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -64,13 +65,21 @@ func TestTerraformSetsExactlyWhatTheServerReads(t *testing.T) {
 	}
 }
 
-func TestTerraformPassesTheTableflowParameterThatItCreates(t *testing.T) {
-	ecs, _ := os.ReadFile("../../tf/ecs.tf")
-	tflow, _ := os.ReadFile("../../tf/tableflow.tf")
-	if !strings.Contains(string(ecs), `name = "PIMS_TABLEFLOW_PARAM", value = local.tableflow_param_name`) {
-		t.Error("the app is not told the parameter name")
+// Tableflow is the app's to switch on and off. A confluent_tableflow_topic in Terraform
+// would fight it: the app's POST would find the topic enabled and Terraform would lose track
+// of what the app disabled at shutdown.
+func TestTerraformDoesNotManageTableflowTopics(t *testing.T) {
+	files, err := filepath.Glob("../../tf/*.tf")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no Terraform files found: %v", err)
 	}
-	if !strings.Contains(string(tflow), "name  = local.tableflow_param_name") || !strings.Contains(string(tflow), `value = "true"`) {
-		t.Error("tableflow.tf does not set that parameter to true")
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), `resource "confluent_tableflow_topic"`) {
+			t.Errorf("%s manages Tableflow topics, which the app enables itself", f)
+		}
 	}
 }

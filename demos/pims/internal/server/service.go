@@ -27,6 +27,9 @@ const (
 
 const maxLogs = 500
 
+// shutdownWait (a variable for tests) is how long Shutdown lets a running setup react to being stopped.
+var shutdownWait = 20 * time.Second
+
 // ErrNotStarted is returned if the service is used before Start.
 var ErrNotStarted = errors.New("the service is still starting")
 
@@ -65,6 +68,8 @@ type Service struct {
 	// closing is set by Close. Setup then refuses to start, so it cannot add to wg while
 	// Close waits on it.
 	closing bool
+	// shutdownMu serialises Shutdown.
+	shutdownMu sync.Mutex
 }
 
 // New builds the service. base receives the log records, which also go to the UI.
@@ -118,8 +123,9 @@ func (s *Service) Start(ctx context.Context) {
 	}
 }
 
-// Close stops background work, waiting up to grace for it to react.
-func (s *Service) Close(grace time.Duration) {
+// stop cancels background work and waits up to grace for it to react. It reports whether
+// all of it has stopped.
+func (s *Service) stop(grace time.Duration) bool {
 	s.mu.Lock()
 	s.closing = true
 	cancel := s.cancel
@@ -131,11 +137,41 @@ func (s *Service) Close(grace time.Duration) {
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
+		return true
 	case <-time.After(grace):
 		s.log.Warn("Background work did not stop in time", "grace", grace)
+		return false
 	}
+}
+
+// Close stops background work, waiting up to grace for it to react.
+func (s *Service) Close(grace time.Duration) {
+	s.stop(grace)
 	s.pipe.Close()
 	s.hub.close()
+}
+
+// Shutdown is what Launchpad asks for before it destroys the demo. It stops the setup, the
+// simulator and the metrics monitor, then turns Tableflow off on the topics, which
+// Terraform could not delete otherwise. Calling it again is safe, so a failed teardown can
+// be retried. The demo stays stopped after it, even if it fails: only a new task runs it
+// again. Requests are served one at a time, so a retry does not race the call it repeats.
+func (s *Service) Shutdown(ctx context.Context) error {
+	s.shutdownMu.Lock()
+	defer s.shutdownMu.Unlock()
+	s.log.Info("Shutting down the demo")
+	// A setup still running could enable Tableflow after it was disabled, so it stops first,
+	// and if it will not, the topics are not touched: the caller must try again.
+	if !s.stop(shutdownWait) {
+		return errors.New("the setup did not stop in time")
+	}
+	s.pipe.Close()
+	if err := s.pipe.DisableTableflow(ctx); err != nil {
+		s.log.Error("Could not disable Tableflow", "error", err)
+		return err
+	}
+	s.log.Info("Demo is shut down")
+	return nil
 }
 
 func (s *Service) publishSimStats(ctx context.Context) {
@@ -182,9 +218,11 @@ func (s *Service) Setup() error {
 	}
 	ctx := s.ctx
 	s.busy, s.lastError = "setup", ""
+	// Added before the lock is released: stop sets closing under the same lock and then
+	// waits, so it either refuses this setup or waits for it.
+	s.wg.Add(1)
 	s.mu.Unlock()
 
-	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		err := s.pipe.Setup(ctx, s.cfg.Credentials())

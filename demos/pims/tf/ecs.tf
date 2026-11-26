@@ -6,16 +6,9 @@
 #   connect      :8083  Kafka Connect with the Debezium MySQL plugin
 #   duckdb       :8081  DuckDB CLI and the agent that runs the UI's queries
 
-data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  # Terraform sets this parameter to true once Tableflow is on, and the app waits for
-  # it. Its ARN is built, not read from the resource, because the task role needs it
-  # before the parameter exists.
-  tableflow_param_name = "/launchpad/${local.name}/tableflow-enabled"
-  tableflow_param_arn  = "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.tableflow_param_name}"
-
   secret_arn = aws_secretsmanager_secret.pims.arn
   # A secret's JSON key as a container secret: <arn>:<key>::
   from_secret = { for k in [
@@ -98,7 +91,6 @@ locals {
     { name = "PIMS_SCHEMA_REGISTRY_URL", value = data.confluent_schema_registry_cluster.pims.rest_endpoint },
     { name = "PIMS_TABLEFLOW_CATALOG_ENDPOINT", value = "https://tableflow.${var.aws_region}.aws.confluent.cloud/iceberg/catalog/organizations/${data.confluent_organization.this.id}/environments/${confluent_environment.pims.id}" },
     { name = "PIMS_TOPICS", value = join(",", sort(tolist(local.tables))) },
-    { name = "PIMS_TABLEFLOW_PARAM", value = local.tableflow_param_name },
   ]
   app_secrets = [
     { name = "PIMS_ACCESS_TOKEN", valueFrom = local.from_secret["ACCESS_TOKEN"] },
@@ -156,25 +148,6 @@ resource "aws_iam_role_policy" "execution_secrets" {
   policy = data.aws_iam_policy_document.execution_secrets.json
 }
 
-# The task role is the app's: it may read one parameter.
-resource "aws_iam_role" "task" {
-  name               = "${local.name}-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
-}
-
-data "aws_iam_policy_document" "task" {
-  statement {
-    actions   = ["ssm:GetParameter"]
-    resources = [local.tableflow_param_arn]
-  }
-}
-
-resource "aws_iam_role_policy" "task" {
-  name   = "tableflow-signal"
-  role   = aws_iam_role.task.id
-  policy = data.aws_iam_policy_document.task.json
-}
-
 resource "aws_ecs_cluster" "pims" {
   name = local.name
 }
@@ -186,7 +159,6 @@ resource "aws_ecs_task_definition" "pims" {
   cpu                      = var.task_cpu
   memory                   = var.task_memory
   execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
 
   # MySQL's data and DuckDB's spill space.
   ephemeral_storage {

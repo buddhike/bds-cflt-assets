@@ -28,6 +28,7 @@ import (
 	"pims/internal/retry"
 	"pims/internal/schema"
 	"pims/internal/sim"
+	"pims/internal/tableflow"
 	"pims/internal/terraform"
 )
 
@@ -39,10 +40,6 @@ const (
 	servicesTimeout  = 10 * time.Minute
 	connectorTimeout = 5 * time.Minute
 	schemasTimeout   = 20 * time.Minute
-	// Terraform enables Tableflow after the schemas exist, then Launchpad's
-	// run can still take most of a Lambda slice, or a few if it is resumed.
-	tableflowTimeout = 45 * time.Minute
-	signalInterval   = 10 * time.Second
 )
 
 // Titles describe the steps as the ECS task performs them.
@@ -50,12 +47,12 @@ var Titles = map[pipeline.StepID]string{
 	pipeline.StepDocker:    "Check configuration",
 	pipeline.StepCloud:     "Confluent Cloud (provisioned by Launchpad)",
 	pipeline.StepServices:  "Wait for MySQL, Kafka Connect and DuckDB",
-	pipeline.StepTableflow: "Wait for Tableflow (enabled by Launchpad)",
+	pipeline.StepTableflow: "Enable Tableflow",
 }
 
 // NewDeps wires the pipeline for the ECS task. It is the desktop wiring with
 // Terraform and docker replaced by what Launchpad and the task already provide.
-func NewDeps(cfg Config, signal TableflowSignal, log *slog.Logger) (pipeline.Deps, error) {
+func NewDeps(cfg Config, log *slog.Logger) (pipeline.Deps, error) {
 	agent, err := duckdbagent.NewClient(cfg.AgentURL, cfg.AgentToken)
 	if err != nil {
 		return pipeline.Deps{}, err
@@ -63,6 +60,16 @@ func NewDeps(cfg Config, signal TableflowSignal, log *slog.Logger) (pipeline.Dep
 	connectBase, err := loopbackURL(cfg.ConnectURL)
 	if err != nil {
 		return pipeline.Deps{}, fmt.Errorf("connect url: %w", err)
+	}
+
+	endpoint := cfg.TableflowAPIURL
+	if endpoint == "" {
+		endpoint = tableflow.DefaultEndpoint
+	}
+	tf, err := tableflow.New(endpoint, cfg.Outputs.TableflowAPIKey, cfg.Outputs.TableflowAPISecret,
+		cfg.Outputs.EnvironmentID, cfg.Outputs.KafkaClusterID, log)
+	if err != nil {
+		return pipeline.Deps{}, err
 	}
 
 	generation := newGenerationSource(log)
@@ -75,7 +82,7 @@ func NewDeps(cfg Config, signal TableflowSignal, log *slog.Logger) (pipeline.Dep
 			if !o.EnableTableflow {
 				return out, nil
 			}
-			if err := waitForSignal(ctx, signal, signalInterval, tableflowTimeout, log); err != nil {
+			if err := tf.Enable(ctx, out.Topics); err != nil {
 				return terraform.Outputs{}, err
 			}
 			out.TableflowEnabled = true
@@ -132,6 +139,7 @@ func NewDeps(cfg Config, signal TableflowSignal, log *slog.Logger) (pipeline.Dep
 			}
 			return r.WaitForValueSchemas(ctx, out.Topics)
 		},
+		DisableTableflow: func(ctx context.Context) error { return tf.Disable(ctx, cfg.Outputs.Topics) },
 		NewQuerier: func(c config.Credentials, out terraform.Outputs) (latency.Querier, error) {
 			return latency.NewMetricsAPI(latency.DefaultEndpoint, out.KafkaClusterID, c.APIKey, c.APISecret, schema.Tables)
 		},
@@ -167,45 +175,6 @@ func loopbackURL(raw string) (string, error) {
 		return "", fmt.Errorf("must be http://127.0.0.1:<port>, got %q", raw)
 	}
 	return strings.TrimRight(raw, "/"), nil
-}
-
-// ErrSignalDenied is returned when the task may not read the Tableflow parameter. Waiting
-// longer cannot fix that.
-var ErrSignalDenied = errors.New("not allowed to read the Tableflow signal")
-
-// logEvery is how many polls pass between repeats of the same message, so a long wait does
-// not fill the UI's log history.
-const logEvery = 6
-
-// waitForSignal polls until Terraform has enabled Tableflow.
-func waitForSignal(ctx context.Context, s TableflowSignal, every, limit time.Duration, log *slog.Logger) error {
-	ctx, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for poll := 0; ; poll++ {
-		on, err := s.Enabled(ctx)
-		switch {
-		case errors.Is(err, ErrSignalDenied):
-			return err
-		case err != nil:
-			if poll%logEvery == 0 {
-				log.Warn("Could not check whether Tableflow is enabled", "error", err)
-			}
-		case on:
-			log.Info("Tableflow has been enabled")
-			return nil
-		default:
-			if poll%logEvery == 0 {
-				log.Info("Waiting for Launchpad to enable Tableflow")
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for Tableflow to be enabled: %w", ctx.Err())
-		case <-t.C:
-		}
-	}
 }
 
 // waitForServices waits until the sibling containers answer.

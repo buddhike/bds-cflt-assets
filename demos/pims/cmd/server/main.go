@@ -56,12 +56,8 @@ func runServer(ctx context.Context, log *slog.Logger, getenv func(string) string
 	if err != nil {
 		return err
 	}
-	signal, err := server.NewSSMSignal(ctx, cfg.AWSRegion, cfg.TableflowParam)
-	if err != nil {
-		return err
-	}
 	svc, err := server.New(cfg, log.Handler(), func(l *slog.Logger) (pipeline.Deps, error) {
-		return server.NewDeps(cfg, signal, l)
+		return server.NewDeps(cfg, l)
 	})
 	if err != nil {
 		return err

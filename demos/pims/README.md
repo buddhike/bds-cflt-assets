@@ -41,9 +41,9 @@ the parts fit, and the order Terraform and the server set things up in, is in
   has. To launch the images of an unmerged branch, set that default to the branch
   name (the workflow tags each push with its branch and commit) on that branch,
   and point the stack's `DemosRef` at it.
-* The link carries a random access token, and the load balancer speaks plain
-  HTTP. Set `allowed_cidr_blocks` to your own address range for anything but a
-  short demo.
+* The link is HTTPS, on a `*.cloudfront.net` name, and carries a random access
+  token. CloudFront reaches an internal load balancer through a VPC origin. There
+  is no IP allow list.
 * MySQL's data is on the task's own storage, so it is lost if the task is
   replaced. Tear the demo down from Launchpad, not from the UI.
 

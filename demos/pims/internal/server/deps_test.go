@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,41 +26,6 @@ import (
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-type fakeSignal struct {
-	answers []bool
-	err     error
-	calls   atomic.Int32
-}
-
-func (f *fakeSignal) Enabled(context.Context) (bool, error) {
-	n := int(f.calls.Add(1)) - 1
-	if f.err != nil {
-		return false, f.err
-	}
-	return f.answers[min(n, len(f.answers)-1)], nil
-}
-
-func TestWaitForSignalReturnsOnceEnabled(t *testing.T) {
-	s := &fakeSignal{answers: []bool{false, false, true}}
-	if err := waitForSignal(context.Background(), s, time.Millisecond, time.Second, quiet); err != nil {
-		t.Fatal(err)
-	}
-	if s.calls.Load() != 3 {
-		t.Errorf("calls = %d, want 3", s.calls.Load())
-	}
-}
-
-func TestWaitForSignalKeepsTryingThroughErrorsAndGivesUp(t *testing.T) {
-	s := &fakeSignal{err: errors.New("throttled")}
-	err := waitForSignal(context.Background(), s, time.Millisecond, 50*time.Millisecond, quiet)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want a deadline", err)
-	}
-	if s.calls.Load() < 2 {
-		t.Errorf("gave up after %d calls", s.calls.Load())
-	}
-}
-
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	c, err := load(fullEnv())
@@ -66,26 +35,75 @@ func testConfig(t *testing.T) Config {
 	return c
 }
 
-func TestProvisionHandsOverTheOutputsAndWaitsForTableflow(t *testing.T) {
+// tableflowAPI stands in for the Confluent Cloud API and records what it is asked.
+type tableflowAPI struct {
+	mu       sync.Mutex
+	enabled  []string
+	disabled []string
+}
+
+func (f *tableflowAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.Method {
+	case http.MethodPost:
+		var b struct {
+			Spec struct {
+				DisplayName string `json:"display_name"`
+			} `json:"spec"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		f.enabled = append(f.enabled, b.Spec.DisplayName)
+		w.WriteHeader(http.StatusAccepted)
+	case http.MethodDelete:
+		f.disabled = append(f.disabled, path.Base(r.URL.Path))
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func apiConfig(t *testing.T) (Config, *tableflowAPI) {
+	t.Helper()
+	api := &tableflowAPI{}
+	srv := httptest.NewServer(api)
+	t.Cleanup(srv.Close)
 	cfg := testConfig(t)
-	s := &fakeSignal{answers: []bool{true}}
-	d, err := NewDeps(cfg, s, quiet)
+	cfg.TableflowAPIURL = srv.URL
+	return cfg, api
+}
+
+func TestProvisionHandsOverTheOutputsAndEnablesTableflowInThePhaseThatAsksForIt(t *testing.T) {
+	cfg, api := apiConfig(t)
+	d, err := NewDeps(cfg, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := d.Provision(context.Background(), cfg.Credentials(), terraform.ApplyOptions{})
-	if err != nil || out.TableflowEnabled || out.KafkaClusterID != "lkc-1" || s.calls.Load() != 0 {
-		t.Fatalf("first phase: %+v, %v, signal calls %d", out, err, s.calls.Load())
+	if err != nil || out.TableflowEnabled || out.KafkaClusterID != "lkc-1" || len(api.enabled) != 0 {
+		t.Fatalf("first phase: %+v, %v, enabled %v", out, err, api.enabled)
 	}
 	out, err = d.Provision(context.Background(), cfg.Credentials(), terraform.ApplyOptions{EnableTableflow: true})
-	if err != nil || !out.TableflowEnabled || s.calls.Load() != 1 {
-		t.Fatalf("second phase: %+v, %v, signal calls %d", out, err, s.calls.Load())
+	if err != nil || !out.TableflowEnabled || !slices.Equal(api.enabled, cfg.Outputs.Topics) {
+		t.Fatalf("second phase: %+v, %v, enabled %v, want %v", out, err, api.enabled, cfg.Outputs.Topics)
+	}
+}
+
+func TestDisableTableflowDisablesEveryTopic(t *testing.T) {
+	cfg, api := apiConfig(t)
+	d, err := NewDeps(cfg, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DisableTableflow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(api.disabled, cfg.Outputs.Topics) {
+		t.Errorf("disabled %v, want %v", api.disabled, cfg.Outputs.Topics)
 	}
 }
 
 func TestEverythingThatDeletesIsRefused(t *testing.T) {
 	cfg := testConfig(t)
-	d, err := NewDeps(cfg, &fakeSignal{answers: []bool{true}}, quiet)
+	d, err := NewDeps(cfg, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +121,7 @@ func TestEverythingThatDeletesIsRefused(t *testing.T) {
 
 func TestTheStepTitlesAreOverriddenForTheTask(t *testing.T) {
 	cfg := testConfig(t)
-	d, err := NewDeps(cfg, &fakeSignal{answers: []bool{true}}, quiet)
+	d, err := NewDeps(cfg, quiet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,12 +136,12 @@ func TestTheStepTitlesAreOverriddenForTheTask(t *testing.T) {
 func TestNewDepsRefusesNonLoopbackServices(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ConnectURL = "http://10.1.2.3:8083"
-	if _, err := NewDeps(cfg, nil, quiet); err == nil {
+	if _, err := NewDeps(cfg, quiet); err == nil {
 		t.Error("a connect url off the host was accepted")
 	}
 	cfg = testConfig(t)
 	cfg.AgentURL = "http://example.com:8081"
-	if _, err := NewDeps(cfg, nil, quiet); err == nil {
+	if _, err := NewDeps(cfg, quiet); err == nil {
 		t.Error("an agent url off the host was accepted")
 	}
 }
@@ -237,14 +255,6 @@ func TestOutsideECSTheGenerationIsRandomButValidForConnectorNames(t *testing.T) 
 	b, _ := newGenerationSource(quiet).Get(context.Background())
 	if !generationPattern.MatchString(a) || a == b {
 		t.Errorf("generations %q and %q", a, b)
-	}
-}
-
-func TestWaitForSignalGivesUpAtOnceWhenAccessIsDenied(t *testing.T) {
-	s := &fakeSignal{err: ErrSignalDenied}
-	err := waitForSignal(context.Background(), s, time.Millisecond, time.Minute, quiet)
-	if !errors.Is(err, ErrSignalDenied) || s.calls.Load() != 1 {
-		t.Fatalf("err = %v after %d calls", err, s.calls.Load())
 	}
 }
 

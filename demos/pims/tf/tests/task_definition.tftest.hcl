@@ -31,6 +31,15 @@ mock_provider "aws" {
   mock_resource "aws_lb_target_group" {
     defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/pims/abc" }
   }
+  mock_data "aws_security_group" {
+    defaults = { id = "sg-cloudfront" }
+  }
+  mock_resource "aws_cloudfront_vpc_origin" {
+    defaults = { id = "vo-123" }
+  }
+  mock_resource "aws_cloudfront_distribution" {
+    defaults = { domain_name = "d111111abcdef8.cloudfront.net" }
+  }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::123456789012:role/pims" }
   }
@@ -72,11 +81,13 @@ mock_provider "confluent" {
   }
 }
 
-mock_provider "random" {}
+mock_provider "random" {
+  mock_resource "random_password" {
+    defaults = { result = "mockmockmockmockmockmockmockmock" }
+  }
+}
 
 variables {
-  # The wait is a script that polls the real Schema Registry.
-  wait_for_schemas           = false
   aws_region                 = "us-east-1"
   launchpad_tags             = { "launchpad:managed" = "true", "launchpad:demo" = "pims" }
   confluent_cloud_api_key    = "CCKEY"
@@ -127,8 +138,18 @@ run "task_definition" {
   }
 
   assert {
-    condition     = output.launchpad_url != null
-    error_message = "launchpad_url must be an output"
+    condition     = startswith(nonsensitive(output.launchpad_url), "https://d111111abcdef8.cloudfront.net/?access=")
+    error_message = "launchpad_url must be an HTTPS address on CloudFront"
+  }
+
+  assert {
+    condition     = jsondecode(nonsensitive(output.launchpad_shutdown)).url == "https://d111111abcdef8.cloudfront.net/shutdown" && length(jsondecode(nonsensitive(output.launchpad_shutdown)).token) >= 24
+    error_message = "launchpad_shutdown must give Launchpad an HTTPS address and the access token"
+  }
+
+  assert {
+    condition     = aws_lb.pims.internal && aws_cloudfront_distribution.pims.default_cache_behavior[0].viewer_protocol_policy == "redirect-to-https"
+    error_message = "the load balancer must be internal and viewers must be sent to HTTPS"
   }
 }
 
