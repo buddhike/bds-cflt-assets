@@ -16,6 +16,9 @@ import (
 
 const CacheSeconds = 600
 
+// MainBranch is the branch whose tip a demo's commit is compared with.
+const MainBranch = "main"
+
 const (
 	maxName        = 80
 	maxDescription = 500
@@ -28,11 +31,13 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,30}$`)
 
 // Demo is one entry of the catalog.
 type Demo struct {
-	ID             string   `dynamodbav:"id" json:"id"`
-	Name           string   `dynamodbav:"name" json:"name"`
-	Description    string   `dynamodbav:"description" json:"description"`
-	Path           string   `dynamodbav:"path" json:"path"`
-	Ref            string   `dynamodbav:"ref" json:"ref"`
+	ID          string `dynamodbav:"id" json:"id"`
+	Name        string `dynamodbav:"name" json:"name"`
+	Description string `dynamodbav:"description" json:"description"`
+	Path        string `dynamodbav:"path" json:"path"`
+	Ref         string `dynamodbav:"ref" json:"ref"`
+	// Latest is whether Ref was the tip of MainBranch when the catalog was read.
+	Latest         bool     `dynamodbav:"latest" json:"latest"`
 	Valid          bool     `dynamodbav:"valid" json:"valid"`
 	Problems       []string `dynamodbav:"problems" json:"problems"`
 	NeedsConfluent bool     `dynamodbav:"needsConfluent" json:"needsConfluent"`
@@ -59,6 +64,14 @@ func Refresh(ctx context.Context, svc *services.Services) ([]Demo, error) {
 	sha, err := github.ResolveRef(ctx, svc)
 	if err != nil {
 		return nil, err
+	}
+	latest := sha
+	if svc.Settings.DemosRef != MainBranch {
+		if latest, err = github.Resolve(ctx, svc, MainBranch); err != nil {
+			// Not worth failing the refresh: the demos are still listed, without the badge.
+			svc.Log.Warn("Could not resolve the main branch", "error", err)
+			latest = ""
+		}
 	}
 	entries, err := github.Tree(ctx, svc, sha)
 	if err != nil {
@@ -92,6 +105,7 @@ func Refresh(ctx context.Context, svc *services.Services) ([]Demo, error) {
 		if err != nil {
 			return nil, err
 		}
+		demo.Latest = sha == latest
 		demos = append(demos, demo)
 	}
 

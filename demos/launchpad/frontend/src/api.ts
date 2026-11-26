@@ -31,6 +31,10 @@ export interface Demo {
   id: string;
   name: string;
   description: string;
+  /** The commit the demo was read at. */
+  ref: string;
+  /** Whether `ref` was the tip of the main branch when the repository was last read. */
+  latest: boolean;
   valid: boolean;
   problems: string[];
   needsConfluent: boolean;

@@ -63,8 +63,26 @@ func TestRefreshDiscoversDemosWithTF(t *testing.T) {
 	if broken.Valid || len(broken.Problems) == 0 {
 		t.Errorf("broken %+v", broken)
 	}
-	if pims.Ref != testenv.SHA || pims.Path != "demos/pims" {
+	if pims.Ref != testenv.SHA || pims.Path != "demos/pims" || !pims.Latest {
 		t.Errorf("pims %+v", pims)
+	}
+}
+
+func TestADemoReadFromAnotherRefIsLatestOnlyWhileItIsMainsTip(t *testing.T) {
+	const other = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	env := fixture(t)
+	env.Settings.DemosRef = "v1"
+	env.GitHub.Route("https://api.github.com/repos/owner/repo/commits/v1", []byte(testenv.SHA))
+
+	env.GitHub.Route("https://api.github.com/repos/owner/repo/commits/main", []byte(other))
+	demos, err := catalog.Refresh(ctx, env.Services)
+	if err != nil || len(demos) == 0 || demos[0].Latest {
+		t.Fatalf("main moved on: %+v, %v", demos, err)
+	}
+
+	env.GitHub.Route("https://api.github.com/repos/owner/repo/commits/main", []byte(testenv.SHA))
+	if demos, err = catalog.Refresh(ctx, env.Services); err != nil || !demos[0].Latest {
+		t.Fatalf("main is at the demo's commit: %+v, %v", demos, err)
 	}
 }
 

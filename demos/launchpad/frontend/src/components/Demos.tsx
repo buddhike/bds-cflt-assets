@@ -129,6 +129,10 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
         {state && <span className={`pill ${state.status}`}>{LABEL[state.status]}{transient ? '…' : ''}</span>}
       </header>
       {demo.description && <p>{demo.description}</p>}
+      <p className="muted small">
+        Commit <code title={demo.ref}>{demo.ref.slice(0, 7)}</code>
+        {' · '}{demo.latest ? 'Latest on main' : 'Not the latest on main'}
+      </p>
 
       {!demo.valid && (
         <p className="error">

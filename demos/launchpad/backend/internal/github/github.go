@@ -93,7 +93,11 @@ func repo(svc *services.Services) (string, error) {
 
 // ResolveRef is the commit SHA the configured branch or tag points at now.
 func ResolveRef(ctx context.Context, svc *services.Services) (string, error) {
-	ref := svc.Settings.DemosRef
+	return Resolve(ctx, svc, svc.Settings.DemosRef)
+}
+
+// Resolve is the commit SHA a branch or tag of the repository points at now.
+func Resolve(ctx context.Context, svc *services.Services, ref string) (string, error) {
 	if !refPattern.MatchString(ref) {
 		return "", fmt.Errorf("invalid ref %q", ref)
 	}

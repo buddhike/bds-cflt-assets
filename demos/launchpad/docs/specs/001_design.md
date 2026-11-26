@@ -66,7 +66,7 @@ DynamoDB Local. That is what keeps `db.Memory` honest.
 | `USER#<email>` | `CREDS` | `ciphertext` (KMS), `apiKeyHint` (last 4), `updatedAt` |
 | `OTP#owner` | `OTP` | `salt`, `hash`, `attempts`, `sentAt`, `hourStart`, `hourCount`, `ttl` |
 | `SESSION#<sha256 token>` | `SESSION` | `email`, `ttl` |
-| `CATALOG` | `DEMO#<id>` | `name`, `description`, `path`, `ref`, `needsConfluent` |
+| `CATALOG` | `DEMO#<id>` | `name`, `description`, `path`, `ref`, `latest`, `needsConfluent` |
 | `CATALOG` | `META` | `refreshedAt`, `ref` |
 | `DEMO#<id>` | `STATE` | `status`, `runId`, `ref`, `launchedBy`, `credsOwner`, `url`, `error`, `logTail`, `resumes`, `updatedAt` |
 
@@ -158,6 +158,12 @@ stateDiagram-v2
 A retry is a new launch, not a continuation. It starts again from step 1, with a
 new `runId`, `resumes` back at 0 and the error cleared. Terraform state is kept in
 S3, so the apply carries on from what the failed run created.
+
+Each catalog entry also carries `latest`: whether its `ref` was the tip of `main`
+when the repository was last read. The demo list shows the short `ref` and this
+flag, so it can be up to `CacheSeconds` out of date. When `DemosRepoRef` is not
+`main`, a refresh makes one more call to resolve `main`; if that fails, `latest`
+is false and the refresh still succeeds.
 
 A retry runs the commit `ref` of the **cached** catalog entry, not the tip of
 `DemosRepoRef`. The cache is re-read when a demo listing finds it older than 10
