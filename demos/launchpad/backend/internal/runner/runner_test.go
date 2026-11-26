@@ -389,3 +389,94 @@ func TestAnErrorFromTheRepositoryFailsTheRunWithItsMessage(t *testing.T) {
 		t.Fatalf("error %q", msg)
 	}
 }
+
+const newSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+// update pushes a new commit that changes both demos, and asks for an update of one that is running.
+func (f *fixture) update(t *testing.T, demo string) runner.Event {
+	t.Helper()
+	changed := map[string]string{"demos/pims/tf/main.tf": testenv.CloudTF + "# changed\n", "demos/plain/tf/main.tf": testenv.GoodTF + "# changed\n"}
+	f.GitHub.AddRepoAt("owner/repo", newSHA, changed)
+	top := "r-" + newSHA + "/"
+	f.GitHub.TarballAt(newSHA, []testenv.Member{
+		{Name: top + "demos/pims/tf/main.tf", Data: changed["demos/pims/tf/main.tf"]},
+		{Name: top + "demos/plain/tf/main.tf", Data: changed["demos/plain/tf/main.tf"]},
+	})
+	if _, err := runs.RequestUpdate(ctx, f.Services, demo, ann); err != nil {
+		t.Fatal(err)
+	}
+	f.Lambda.Clear()
+	return runner.Event{DemoID: demo, RunID: f.state(demo).RunID}
+}
+
+func TestAnUpdateAppliesTheNewCommitAndReadsTheAddressAgain(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	f.install("ok", "http://demo.example/v2")
+	ev := f.update(t, "plain")
+	if got := f.run(t, ev, 900*time.Second); got != "running" {
+		t.Fatalf("result %q", got)
+	}
+	st := f.state("plain")
+	if st.Status != runs.Running || st.URL != "http://demo.example/v2" || st.Ref != newSHA || st.Error != "" {
+		t.Fatalf("state %+v", st)
+	}
+	if f.called("terraform apply -auto-approve") != 2 || f.called("terraform destroy") != 0 {
+		t.Fatalf("calls %v", f.calls())
+	}
+	// The code that is applied is the new commit's, and the demo is not asked to shut down.
+	src, err := os.ReadFile(filepath.Join(f.runner.Work, "src/plain/tf/main.tf"))
+	if err != nil || !strings.Contains(string(src), "# changed") {
+		t.Fatalf("source %q, %v", src, err)
+	}
+	if f.called("terraform output -raw launchpad_shutdown") != 0 {
+		t.Fatalf("calls %v", f.calls())
+	}
+	if !strings.Contains(st.LogTail, "updating plain at bbbbbbbbbbbb") || !strings.Contains(f.Emitted(), `"DemoUpdateSucceeded":1`) {
+		t.Fatalf("log %q, metrics %s", st.LogTail, f.Emitted())
+	}
+}
+
+func TestAFailedUpdateIsRecordedAndKeepsTheOldAddress(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	f.install("fail", "")
+	ev := f.update(t, "plain")
+	if got := f.run(t, ev, 900*time.Second); got != "failed" {
+		t.Fatalf("result %q", got)
+	}
+	st := f.state("plain").Public()
+	if st.Status != "update_failed" || st.URL != "http://demo.example" || !strings.Contains(st.Error, "terraform apply failed") || !strings.Contains(st.LogTail, "Error: boom") {
+		t.Fatalf("state %+v", st)
+	}
+	if !strings.Contains(f.Emitted(), `"DemoUpdateFailed":1`) || strings.Contains(f.Emitted(), `"DemoLaunchFailed"`) {
+		t.Fatalf("metrics %s", f.Emitted())
+	}
+}
+
+func TestAnUpdateThatRunsOutOfTimeResumesAsAnUpdate(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	ev := f.update(t, "plain")
+	if got := f.run(t, ev, 100*time.Second); got != "resumed" {
+		t.Fatalf("result %q", got)
+	}
+	if st := f.state("plain"); st.Status != runs.Updating || st.Resumes != 1 || st.URL != "http://demo.example" {
+		t.Fatalf("state %+v", st)
+	}
+	ev.Resumes = 1
+	if got := f.run(t, ev, 900*time.Second); got != "running" {
+		t.Fatalf("result %q", got)
+	}
+}
+
+func TestAnUpdateOfADemoThatNeedsConfluentCloudGivesTerraformTheKeyOfTheOwner(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "pims"), 900*time.Second)
+	ev := f.update(t, "pims")
+	f.run(t, ev, 900*time.Second)
+	st := f.state("pims")
+	if st.Status != runs.Running || strings.Contains(st.LogTail, "hunter2") || !strings.Contains(st.LogTail, "key=***") {
+		t.Fatalf("state %+v", st)
+	}
+}

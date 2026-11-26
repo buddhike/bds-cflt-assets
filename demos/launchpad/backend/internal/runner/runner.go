@@ -156,14 +156,19 @@ func (r *Runner) Run(ctx context.Context, ev Event, remaining func() time.Durati
 	if err != nil {
 		return "", err
 	}
-	if state == nil || state.RunID != ev.RunID || (state.Status != runs.Launching && state.Status != runs.TearingDown) {
+	if state == nil || state.RunID != ev.RunID || (state.Status != runs.Launching && state.Status != runs.Updating && state.Status != runs.TearingDown) {
 		svc.Log.Warn("Ignoring a runner invocation for a run that is no longer current", "demo", ev.DemoID)
 		return Stale, nil
 	}
 
 	a := &slice{Runner: r, ev: ev, state: state, remaining: remaining, started: time.Now(), tail: terraform.NewLogTail()}
 	a.destroy = state.Action == runs.Destroy
+	a.update = state.Status == runs.Updating
 	a.verb, a.failedStatus, a.failedMetric = "apply", runs.LaunchFailed, "DemoLaunchFailed"
+	a.doneMetric = "DemoLaunchSucceeded"
+	if a.update {
+		a.failedStatus, a.failedMetric, a.doneMetric = runs.UpdateFailed, "DemoUpdateFailed", "DemoUpdateSucceeded"
+	}
 	if a.destroy {
 		a.verb, a.failedStatus, a.failedMetric = "destroy", runs.TeardownFailed, "DemoTeardownFailed"
 	}
@@ -178,7 +183,12 @@ func (r *Runner) Run(ctx context.Context, ev Event, remaining func() time.Durati
 		message = strings.ToValidUTF8(message[:maxMessage], "")
 	}
 	text := a.tail.Text()
-	if _, ferr := runs.Finish(ctx, svc, ev.DemoID, ev.RunID, a.failedStatus, runs.Outcome{Error: message, Tail: &text}); ferr != nil {
+	outcome := runs.Outcome{Error: message, Tail: &text}
+	if a.update {
+		// The demo is probably still there, so keep the address it had.
+		outcome.URL = state.URL
+	}
+	if _, ferr := runs.Finish(ctx, svc, ev.DemoID, ev.RunID, a.failedStatus, outcome); ferr != nil {
 		return "", ferr
 	}
 	svc.Metrics.Count(a.failedMetric, "demo", ev.DemoID)
@@ -195,6 +205,8 @@ type slice struct {
 	tail      *terraform.LogTail // replaced by one that hides the credentials, once they are loaded
 
 	destroy      bool
+	update       bool   // an apply of a newer commit to a demo that was running
+	doneMetric   string // counted when an apply succeeds
 	verb         string // the Terraform command
 	failedStatus string
 	failedMetric string
@@ -219,6 +231,9 @@ func (a *slice) do(ctx context.Context) (string, error) {
 	action := "applying"
 	if a.destroy {
 		action = "destroying"
+	}
+	if a.update {
+		action = "updating"
 	}
 	ref := state.Ref
 	if len(ref) > 12 {
@@ -333,7 +348,7 @@ func (a *slice) do(ctx context.Context) (string, error) {
 	if _, err := runs.Finish(ctx, svc, ev.DemoID, ev.RunID, runs.Running, runs.Outcome{URL: url, Tail: &text}); err != nil {
 		return "", err
 	}
-	svc.Metrics.Count("DemoLaunchSucceeded", "demo", ev.DemoID)
+	svc.Metrics.Count(a.doneMetric, "demo", ev.DemoID)
 	return Running, nil
 }
 
