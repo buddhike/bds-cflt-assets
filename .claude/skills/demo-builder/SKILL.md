@@ -21,7 +21,7 @@ Two finished demos are the reference. Copy their shape rather than inventing one
 
 ```
 demos/<id>/
-  demo.json         {"name": "...", "description": "..."}   (optional, but always write it)
+  demo.json         {"name": "...", "description": "...", "tags": [...]}   (optional for Launchpad, but always write it, with tags)
   tf/               Terraform. Required
   cmd/server/ …     the app (Go module, UI embedded in the binary)
   docker/Dockerfile the image
@@ -33,6 +33,12 @@ demos/<id>/
 * `<id>` is the directory name: `^[a-z0-9][a-z0-9-]{0,30}$`, so lower case, digits, hyphens, **31 characters at most**. It ends up in tags, state keys and AWS names.
 * Launchpad only discovers a directory that has a `tf/` directory with `.tf` files.
 * `demo.json` `name` ≤ 80 characters, `description` ≤ 500.
+* `demo.json` `tags` is an array of strings that advertises the **Confluent Cloud products the demo demonstrates**, so a reader can see at a glance what it shows. Launchpad does not read it yet (it ignores unknown keys), so it costs nothing to add and is the one place the list lives. Rules:
+  * Use only names from this vocabulary, spelled exactly like this, so that tags stay filterable: `Apache Kafka`, `Schema Registry`, `Apache Flink`, `Tableflow`, `Kafka Connect`, `Stream Governance`, `Stream Lineage`, `ksqlDB`, `Cluster Linking`. If the demo shows a Confluent Cloud product that is not listed, add the product's official name here in the same change.
+  * Tag what the demo **uses and lets the viewer see working**, not everything Terraform happens to create. A Kafka cluster is there for every demo, but a service account, an API key or a role binding is plumbing and is never a tag. Check `tf/` (`confluent_flink_statement` → `Apache Flink`, `confluent_schema` → `Schema Registry`, a Tableflow API key or the app enabling Tableflow → `Tableflow`, `confluent_connector` → `Kafka Connect`) and the app's code and design doc.
+  * Self-managed pieces inside the task (the Kafka Connect and Debezium containers in `pims`) are not Confluent Cloud products. Tag `Kafka Connect` only for a fully managed connector (`confluent_connector`).
+  * List the most prominent product first, without duplicates, and keep the list short (normally 2 to 5). Current examples: `pims` is `["Apache Kafka", "Schema Registry", "Tableflow"]`, `automated-api-diagnosis` is `["Apache Kafka", "Schema Registry", "Apache Flink"]`.
+  * When a change adds or removes a product from a demo, update its `tags` in the same commit.
 * Launchpad downloads `demos/<id>/` from GitHub **at a commit**, so a demo does not exist for Launchpad until it is committed and pushed to the branch the stack reads (`DemosRef`, default `main`). The catalog is cached for 10 minutes; an admin's refresh re-reads it. A retry of a failed launch reuses the cached commit, so after pushing a fix, **refresh the catalog and then retry**. Teardown uses the commit that was last applied.
 
 ## 2. The Terraform interface (what Launchpad checks)
@@ -131,7 +137,7 @@ So:
 3. **Dockerfile** and the image workflow. Mind cgo (`confluent-kafka-go` needs a glibc build with `CGO_ENABLED=1`, as in automated-api-diagnosis' Dockerfile) and `.dockerignore` for `tf`, `docs`, `.git`.
 4. **Terraform**: `versions.tf` (providers, `default_tags = var.launchpad_tags`), `variables.tf`, `confluent.tf`, `network.tf`, `cloudfront.tf`, `secrets.tf`, `ecs.tf`, `outputs.tf`. Put a header comment on each file saying what it is for and why.
 5. **Terraform tests** in `tf/tests/*.tftest.hcl` with `mock_provider`s, checking the task definition: secrets are injected, ports and image are right, the service waits for the tables it reads.
-6. **`demo.json`**, `README.md`, `CLAUDE.md` (copy the structure of the existing ones: what it is, commands, architecture, invariants, conventions).
+6. **`demo.json`** (name, description and `tags` from section 1), `README.md`, `CLAUDE.md` (copy the structure of the existing ones: what it is, commands, architecture, invariants, conventions).
 7. **Verify locally, then push, refresh, launch** (below).
 
 ## 7. Verify
