@@ -317,9 +317,6 @@ components only that app has (PIMS's data-flow diagram, a CodeMirror theme). It:
 
 ## Not decided
 
-* **Brand.** The palette is not taken from a Confluent brand guideline. If the
-  system should match it, change the accent and series tokens and run the contrast
-  check.
 * **A way back.** `Launchpad` in a demo's top bar is not a link, because a demo
   does not know Launchpad's address. Launchpad could pass it as a variable.
 * **An in-app theme switch.** There is none; the system follows the OS.
