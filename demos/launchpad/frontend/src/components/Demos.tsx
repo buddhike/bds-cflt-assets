@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useState} from 'react';
-import {api, Demo, DemoStatus, errorText, safeUrl, User} from '../api';
+import {api, ApiError, Demo, DemoStatus, errorText, safeUrl, User} from '../api';
 
 const BUSY: DemoStatus[] = ['launching', 'updating', 'tearing_down'];
 const LABEL: Record<DemoStatus, string> = {
@@ -83,6 +83,7 @@ interface CardProps {
 function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [log, setLog] = useState('');
@@ -108,13 +109,19 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
     return () => { live = false; if (t) clearInterval(t); };
   }, [showLog, transient, demo.id, state?.updatedAt]);
 
+  // What a message said is about the card as it was.
+  useEffect(() => { setError(''); setNotice(''); }, [state?.status, state?.ref]);
+
   async function act(fn: () => Promise<Demo>) {
     setWorking(true);
     setError('');
+    setNotice('');
     try {
       onChange(await fn());
     } catch (err) {
-      setError(errorText(err));
+      // Nothing to update is an answer, not a failure.
+      if (err instanceof ApiError && err.code === 'up_to_date') setNotice(err.message);
+      else setError(errorText(err));
     } finally {
       setWorking(false);
       setConfirming(false);
@@ -124,6 +131,9 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
   const url = state?.url ? safeUrl(state.url) : null;
   // A deployed demo is at the commit that was applied, which may be older than the repository's.
   const shown = state ? state.ref : demo.ref;
+  const commitLabel = state?.status === 'running' ? 'Running commit ' : state?.status === 'updating' ? 'Updating to commit ' : 'Commit ';
+  // The address a demo had stays through an update, but nothing says it is up until the update ends.
+  const oldAddress = (state?.status === 'updating' || state?.status === 'update_failed') && url;
 
   return (
     <article className="card">
@@ -134,7 +144,7 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
       </header>
       {demo.description && <p>{demo.description}</p>}
       <p className="muted small">
-        {state ? 'Running commit ' : 'Commit '}<code title={shown}>{shown.slice(0, 7)}</code>
+        {commitLabel}<code title={shown}>{shown.slice(0, 7)}</code>
         {state
           ? state.updateAvailable && <>{' · '}Newer commit <code title={demo.ref}>{demo.ref.slice(0, 7)}</code> available</>
           : <>{' · '}{demo.latest ? 'Latest on main' : 'Not the latest on main'}</>}
@@ -153,6 +163,7 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
       {state && <p className="muted small">Launched by {state.launchedBy}</p>}
       {state?.error && <p className="error" role="alert">{state.error}</p>}
       {error && <p className="error" role="alert">{error}</p>}
+      {notice && <p className="muted small" role="status">{notice}</p>}
 
       <div className="row">
         {!state && (
@@ -163,15 +174,23 @@ function DemoCard({demo, user, onChange, onNeedCredentials}: CardProps) {
         {state?.status === 'running' && url && (
           <a className="button primary" href={url} target="_blank" rel="noopener noreferrer">Open demo</a>
         )}
-        {state?.status === 'running' && state.updateAvailable && state.canUpdate && (
+        {state?.status === 'running' && state.canUpdate && (
+          // The repository is only read now and then, so a commit just pushed may not be in the
+          // page yet. Asking for the update reads it, and says so when there is nothing new.
           <button disabled={working || !demo.valid} onClick={() => act(() => api.update(demo.id))}>
-            Update to {demo.ref.slice(0, 7)}
+            {state.updateAvailable ? `Update to ${demo.ref.slice(0, 7)}` : 'Check for update'}
           </button>
         )}
         {state?.status === 'update_failed' && state.canUpdate && (
           <button className="primary" disabled={working || !demo.valid} onClick={() => act(() => api.update(demo.id))}>
-            Retry update
+            {state.updateAvailable ? `Retry update with ${demo.ref.slice(0, 7)}` : 'Retry update'}
           </button>
+        )}
+        {oldAddress && (
+          <a className="button" href={oldAddress} target="_blank" rel="noopener noreferrer"
+             title="The address the demo had. It may not work until the update is done.">
+            Open previous address
+          </a>
         )}
         {state?.status === 'running' && !url && <span className="muted">No address was published.</span>}
         {state?.status === 'launch_failed' && (
