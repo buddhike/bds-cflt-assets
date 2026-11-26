@@ -1,16 +1,8 @@
 import {useCallback, useEffect, useState} from 'react';
-import {api, ApiError, Demo, DemoStatus, errorText, safeUrl, User} from '../api';
-
-const BUSY: DemoStatus[] = ['launching', 'updating', 'tearing_down'];
-const LABEL: Record<DemoStatus, string> = {
-  launching: 'Launching',
-  running: 'Running',
-  launch_failed: 'Launch failed',
-  updating: 'Updating',
-  update_failed: 'Update failed',
-  tearing_down: 'Tearing down',
-  teardown_failed: 'Tear down failed',
-};
+import {api, ApiError, Demo, errorText, safeUrl, User} from '../api';
+import {BUSY, statusText, tone} from '../status';
+import {Icon} from './Icon';
+import {Notice} from './Notice';
 
 interface Props {
   user: User;
@@ -55,14 +47,14 @@ export function Demos({user, onNeedCredentials, onShowLog}: Props) {
 
   return (
     <section>
-      <div className="section-head">
+      <div className="page-head">
         <div>
-          <h2>Demos</h2>
-          <p className="muted">Launch a demo into this AWS account, update it when its code changes, and tear it down when you are done.</p>
+          <h1>Demos</h1>
+          <p>Launch a demo into this AWS account, update it when its code changes, and tear it down when you are done.</p>
         </div>
         {user.role === 'admin' && <button onClick={refresh}>Re-read repository</button>}
       </div>
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && <Notice tone="danger" alert>{error}</Notice>}
       {!demos && !error && <p className="muted">Loading…</p>}
       {demos && demos.length === 0 && <p className="muted">No demos were found in the repository.</p>}
       <div className="cards">
@@ -121,18 +113,19 @@ function DemoCard({demo, user, onChange, onNeedCredentials, onShowLog}: CardProp
 
   return (
     <article className="card">
-      <header>
+      <header className="card-head">
         <span className="tile" aria-hidden="true">{demo.name.slice(0, 1)}</span>
-        <div className="grow"><h3>{demo.name}</h3></div>
-        {state && <span className={`pill ${state.status}`}>{LABEL[state.status]}{transient ? '…' : ''}</span>}
+        <h3>{demo.name}</h3>
+        {state?.updateAvailable && <span className="pill warn">Update available</span>}
+        {state ? <span className={`pill ${tone(state.status)}`}>{statusText(state.status)}</span> : <span className="pill">Not deployed</span>}
       </header>
-      {demo.description && <p>{demo.description}</p>}
+      {demo.description && <p className="muted">{demo.description}</p>}
       {demo.tags && demo.tags.length > 0 && (
         <ul className="tags" aria-label="Confluent Cloud products">
           {demo.tags.map((tag) => <li key={tag} className="tag">{tag}</li>)}
         </ul>
       )}
-      <p className="muted small">
+      <p className="small faint">
         {commitLabel}<code title={shown}>{shown.slice(0, 7)}</code>
         {state
           ? state.updateAvailable && <>{' · '}Newer commit <code title={demo.ref}>{demo.ref.slice(0, 7)}</code> available</>
@@ -140,28 +133,28 @@ function DemoCard({demo, user, onChange, onNeedCredentials, onShowLog}: CardProp
       </p>
 
       {!demo.valid && (
-        <p className="error">
-          This demo does not follow the Launchpad interface: {demo.problems.join('; ')}.
-        </p>
+        <Notice tone="danger" title="Not a Launchpad demo.">
+          It does not follow the Launchpad interface: {demo.problems.join('; ')}.
+        </Notice>
       )}
       {demo.valid && demo.needsConfluent && !hasCredentials && (
-        <p className="notice">
-          Needs your Confluent Cloud API key. <button className="link" onClick={onNeedCredentials}>Save it</button>
-        </p>
+        <Notice tone="warn" title="Needs your Confluent Cloud API key.">
+          <button className="link" onClick={onNeedCredentials}>Save it</button>
+        </Notice>
       )}
-      {state && <p className="muted small">Launched by {state.launchedBy}</p>}
-      {state?.error && <p className="error" role="alert">{state.error}</p>}
-      {error && <p className="error" role="alert">{error}</p>}
-      {notice && <p className="muted small" role="status">{notice}</p>}
+      {state && <p className="small faint">Launched by {state.launchedBy}</p>}
+      {state?.error && <Notice tone="danger" alert>{state.error}</Notice>}
+      {error && <Notice tone="danger" alert>{error}</Notice>}
+      {notice && <p className="small muted" role="status">{notice}</p>}
 
-      <div className="row">
+      <div className="row actions">
         {!state && (
           <button className="primary" disabled={working || blocked} onClick={() => act(() => api.launch(demo.id))}>
             Launch
           </button>
         )}
         {state?.status === 'running' && url && (
-          <a className="button primary" href={url} target="_blank" rel="noopener noreferrer">Open demo</a>
+          <a className="button primary" href={url} target="_blank" rel="noopener noreferrer">Open demo<Icon name="external" /></a>
         )}
         {state?.status === 'running' && state.canUpdate && (
           // The repository is only read now and then, so a commit just pushed may not be in the
@@ -178,7 +171,7 @@ function DemoCard({demo, user, onChange, onNeedCredentials, onShowLog}: CardProp
         {oldAddress && (
           <a className="button" href={oldAddress} target="_blank" rel="noopener noreferrer"
              title="The address the demo had. It may not work until the update is done.">
-            Open previous address
+            Open previous address<Icon name="external" />
           </a>
         )}
         {state?.status === 'running' && !url && <span className="muted">No address was published.</span>}
@@ -200,7 +193,7 @@ function DemoCard({demo, user, onChange, onNeedCredentials, onShowLog}: CardProp
               <button onClick={() => setConfirming(false)}>Cancel</button>
             </span>
           ) : (
-            <button disabled={working} onClick={() => setConfirming(true)}>Tear down</button>
+            <button className="quiet" disabled={working} onClick={() => setConfirming(true)}>Tear down</button>
           )
         )}
         {state && <button className="link" onClick={() => onShowLog(demo.id)}>Show log</button>}

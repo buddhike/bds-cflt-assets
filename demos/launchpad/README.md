@@ -4,7 +4,7 @@ Launches demos into an AWS account, updates them when their code changes, and
 tears them down again. The design is in [docs/specs/001_design.md](docs/specs/001_design.md).
 
 * Backend: Go on AWS Lambda, DynamoDB, SNS, Secrets Manager, KMS. See [backend/](backend).
-* Front end: React. See [frontend/](frontend).
+* Front end: React. See [frontend/](frontend). Its look, and every demo's, is specified in [docs/specs/002_visual_design.md](docs/specs/002_visual_design.md).
 * Deployment: one CloudFormation template, [template.yaml](template.yaml).
 
 ## Deploy

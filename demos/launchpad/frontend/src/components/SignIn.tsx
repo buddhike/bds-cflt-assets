@@ -1,6 +1,7 @@
 import {FormEvent, useState} from 'react';
 import {api, errorText} from '../api';
 import {Logo} from './Logo';
+import {Notice} from './Notice';
 
 interface Props {
   onSignedIn: () => void;
@@ -53,14 +54,17 @@ export function SignIn({onSignedIn}: Props) {
 
   return (
     <main className="gate">
-      <Logo size={40} />
-      <h1>Launchpad</h1>
-      <p className="muted">Launch and tear down demos in AWS.</p>
+      <span className="brand"><Logo />Launchpad</span>
+      <div>
+        <h1>Sign in</h1>
+        <p className="muted">Launch and tear down demos in AWS.</p>
+      </div>
       {step === 'phone' ? (
-        <form onSubmit={sendCode}>
-          <label>
-            Phone number
+        <form className="stack" onSubmit={sendCode}>
+          <div className="field">
+            <label htmlFor="phone">Phone number</label>
             <input
+              id="phone"
               type="tel"
               autoComplete="tel"
               autoFocus
@@ -69,15 +73,18 @@ export function SignIn({onSignedIn}: Props) {
               onChange={(e) => setPhone(e.target.value)}
               placeholder="+61400000000"
             />
-          </label>
-          <button className="primary" disabled={busy}>{busy ? 'Sending…' : 'Text me a code'}</button>
+            <span className="hint">The owner's number, with the country code.</span>
+          </div>
+          <div><button className="primary" disabled={busy}>{busy ? 'Sending…' : 'Text me a code'}</button></div>
         </form>
       ) : (
-        <form onSubmit={verify}>
+        <form className="stack" onSubmit={verify}>
           <p>We sent a six digit code to <strong>{phone}</strong>.</p>
-          <label>
-            Code
+          <div className="field">
+            <label htmlFor="code">Code</label>
             <input
+              id="code"
+              className="mono"
               inputMode="numeric"
               autoComplete="one-time-code"
               autoFocus
@@ -87,16 +94,16 @@ export function SignIn({onSignedIn}: Props) {
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
             />
-          </label>
+          </div>
           <div className="row">
             <button className="primary" disabled={busy || code.length !== 6}>{busy ? 'Checking…' : 'Sign in'}</button>
-            <button type="button" disabled={busy} onClick={() => { setStep('phone'); setCode(''); setError(''); }}>
+            <button type="button" className="quiet" disabled={busy} onClick={() => { setStep('phone'); setCode(''); setError(''); }}>
               Use another number
             </button>
           </div>
         </form>
       )}
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && <Notice tone="danger" alert>{error}</Notice>}
     </main>
   );
 }

@@ -1,16 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {api, ApiError, Demo, DemoStatus, errorText} from '../api';
-
-const BUSY: DemoStatus[] = ['launching', 'updating', 'tearing_down'];
-const LABEL: Record<DemoStatus, string> = {
-  launching: 'Launching',
-  running: 'Running',
-  launch_failed: 'Launch failed',
-  updating: 'Updating',
-  update_failed: 'Update failed',
-  tearing_down: 'Tearing down',
-  teardown_failed: 'Tear down failed',
-};
+import {api, ApiError, Demo, errorText} from '../api';
+import {BUSY, statusText, tone} from '../status';
+import {Notice} from './Notice';
 
 // How far from the bottom the reader may be and still count as following the log.
 const FOLLOW_SLACK = 24;
@@ -71,13 +62,13 @@ export function LogView({id, onBack}: Props) {
   return (
     <section className="log-view">
       <div className="log-head">
-        <button onClick={onBack}>← Demos</button>
-        <h2>{name}</h2>
-        {status && <span className={`pill ${status}`}>{LABEL[status]}{busy ? '…' : ''}</span>}
+        <button className="quiet" onClick={onBack}>← Demos</button>
+        <h1>{name}</h1>
+        {status && <span className={`pill ${tone(status)}`}>{statusText(status)}</span>}
         <span className="grow" />
         {log && <button onClick={toEnd}>Jump to end</button>}
       </div>
-      {error && <p className="error" role="alert">{error}</p>}
+      {error && <Notice tone="danger" alert>{error}</Notice>}
       {gone && <p className="muted">There is no demo called “{id}”.</p>}
       {demo && !demo.state && <p className="muted">This demo is not launched, so it has no log.</p>}
       {!demo && !error && !gone && <p className="muted">Loading…</p>}

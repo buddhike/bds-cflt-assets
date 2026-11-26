@@ -1,5 +1,6 @@
 import {FormEvent, useState} from 'react';
 import {api, Credentials, errorText} from '../api';
+import {Notice} from './Notice';
 
 interface Props {
   current: Credentials | undefined;
@@ -46,29 +47,34 @@ export function CredentialsPage({current, onChanged}: Props) {
   }
 
   return (
-    <section className="panel">
-      <h2>Confluent Cloud credentials</h2>
-      <p>
-        Demos that create Confluent Cloud resources use your Cloud API key. It is encrypted before it is stored, is
-        never shown again, and is only decrypted while a demo you launch is being deployed or torn down.
-      </p>
+    <section className="narrow stack">
+      <div className="page-head">
+        <div>
+          <h1>Confluent Cloud key</h1>
+          <p>
+            Demos that create Confluent Cloud resources use your Cloud API key. It is encrypted before it is stored, is
+            never shown again, and is only decrypted while a demo you launch is being deployed or torn down.
+          </p>
+        </div>
+      </div>
       {current?.configured ? (
-        <p className="status-line ok">
-          A key ending in <code>{current.apiKeyHint}</code> is saved.
+        <Notice tone="ok" title="Key saved.">
+          A key ending in <code>{current.apiKeyHint}</code> is saved.{' '}
           <button className="link" disabled={busy} onClick={remove}>Delete it</button>
-        </p>
+        </Notice>
       ) : (
-        <p className="status-line">No key is saved.</p>
+        <Notice>No key is saved.</Notice>
       )}
-      <div className="form-card">
-      <form onSubmit={save} autoComplete="off">
-        <label>
-          Cloud API key
-          <input required value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" spellCheck={false} />
-        </label>
-        <label>
-          Cloud API secret
+      <form className="card stack" onSubmit={save} autoComplete="off">
+        <div className="field">
+          <label htmlFor="api-key">Cloud API key</label>
+          <input id="api-key" className="mono" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" spellCheck={false} />
+        </div>
+        <div className="field">
+          <label htmlFor="api-secret">Cloud API secret</label>
           <input
+            id="api-secret"
+            className="mono"
             required
             type="password"
             value={apiSecret}
@@ -76,12 +82,11 @@ export function CredentialsPage({current, onChanged}: Props) {
             autoComplete="new-password"
             spellCheck={false}
           />
-        </label>
-        <button className="primary" disabled={busy}>{current?.configured ? 'Replace key' : 'Save key'}</button>
+        </div>
+        <div><button className="primary" disabled={busy}>{current?.configured ? 'Replace key' : 'Save key'}</button></div>
       </form>
-      </div>
-      {saved && <p className="status-line ok" role="status">Saved.</p>}
-      {error && <p className="error" role="alert">{error}</p>}
+      {saved && <Notice tone="ok">Saved.</Notice>}
+      {error && <Notice tone="danger" alert>{error}</Notice>}
     </section>
   );
 }

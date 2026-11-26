@@ -4,6 +4,7 @@ import {CredentialsPage} from './components/CredentialsPage';
 import {Demos} from './components/Demos';
 import {Logo} from './components/Logo';
 import {LogView} from './components/LogView';
+import {Notice} from './components/Notice';
 import {SignIn} from './components/SignIn';
 
 type View = 'demos' | 'credentials';
@@ -52,7 +53,7 @@ export default function App() {
   const go = (v: View) => { window.location.hash = v; };
   const showLog = (id: string) => { window.location.hash = LOG_PREFIX + encodeURIComponent(id); };
 
-  if (loadError) return <main className="gate"><p className="error" role="alert">{loadError}</p><button onClick={loadUser}>Retry</button></main>;
+  if (loadError) return <main className="gate"><Notice tone="danger" alert>{loadError}</Notice><div><button onClick={loadUser}>Retry</button></div></main>;
   if (user === undefined) return <main className="gate"><p className="muted">Loading…</p></main>;
   if (user === null) return <SignIn onSignedIn={loadUser} />;
 
@@ -63,17 +64,17 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand"><Logo size={26} />Launchpad</span>
-        <nav aria-label="Main">
+        <span className="brand"><Logo />Launchpad</span>
+        <nav className="tabs" aria-label="Main">
           {tabs.map(([v, label]) => (
-            <button key={v} className={`tab${current === v ? ' active' : ''}`} aria-current={current === v ? 'page' : undefined} onClick={() => go(v)}>
+            <button key={v} className="tab" aria-current={current === v ? 'page' : undefined} onClick={() => go(v)}>
               {label}
             </button>
           ))}
         </nav>
         <span className="who">
           {user.email}
-          <button className="link" onClick={async () => { await api.logout().catch(() => undefined); setUser(null); }}>Sign out</button>
+          <button className="quiet sm" onClick={async () => { await api.logout().catch(() => undefined); setUser(null); }}>Sign out</button>
         </span>
       </header>
       <main className={`page${'log' in view ? ' wide' : ''}`}>
