@@ -1,0 +1,11 @@
+**/node_modules
+frontend/dist
+build
+tf
+docs
+flink
+.git
+*.md
+.env*
+*.tfvars
+*.tfstate*
