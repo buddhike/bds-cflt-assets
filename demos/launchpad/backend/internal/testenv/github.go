@@ -112,7 +112,12 @@ type Member struct {
 
 // Tarball serves the repository as a gzip tarball.
 func (g *GitHub) Tarball(members []Member) {
-	g.Route("https://codeload.github.com/owner/repo/tar.gz/"+SHA, TarGz(members))
+	g.TarballAt(SHA, members)
+}
+
+// TarballAt serves the repository at a commit as a gzip tarball.
+func (g *GitHub) TarballAt(sha string, members []Member) {
+	g.Route("https://codeload.github.com/owner/repo/tar.gz/"+sha, TarGz(members))
 }
 
 // TarGz builds a gzip tarball.

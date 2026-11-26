@@ -199,7 +199,8 @@ until somebody asks for an update.
    the repository cannot be read the answer is `502 catalog_unavailable` and the
    demo is untouched. The launch call does not do this, and still uses the
    cached catalog.
-3. It refuses a demo that no longer follows the interface (`invalid_demo`). It
+3. It refuses a demo that is no longer in the repository (`409 demo_removed`:
+   tear it down) and one that no longer follows the interface (`invalid_demo`). It
    refuses a `running` demo whose `ref` is already the new one (`409
    up_to_date`), so a click that has nothing to apply does not start a run. An
    `update_failed` demo can always be retried, even at the same `ref`.

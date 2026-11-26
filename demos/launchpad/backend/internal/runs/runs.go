@@ -30,6 +30,8 @@ const (
 	Launching      = "launching"
 	Running        = "running"
 	LaunchFailed   = "launch_failed"
+	Updating       = "updating"
+	UpdateFailed   = "update_failed"
 	TearingDown    = "tearing_down"
 	TeardownFailed = "teardown_failed"
 )
@@ -162,7 +164,7 @@ func RequestLaunch(ctx context.Context, svc *services.Services, demoID, email st
 		return nil, err
 	}
 	svc.Metrics.Count("DemoLaunchRequested", "demo", demoID)
-	if err := start(ctx, svc, demoID, runID, LaunchFailed); err != nil {
+	if err := start(ctx, svc, demoID, runID, LaunchFailed, ""); err != nil {
 		return nil, err
 	}
 	current, err := GetRaw(ctx, svc, demoID)
@@ -182,25 +184,9 @@ func RequestTeardown(ctx context.Context, svc *services.Services, demoID string,
 		return nil, apperr.Forbidden("Only the person who launched a demo, or an admin, can tear it down")
 	}
 
-	owner := ""
-	if state.NeedsConfluent {
-		// Destroying needs the same Confluent Cloud account that created things.
-		for _, candidate := range []string{state.LaunchedBy, user.Email} {
-			status, err := credentials.GetStatus(ctx, svc, candidate)
-			if err != nil {
-				return nil, err
-			}
-			if status.Configured {
-				owner = candidate
-				break
-			}
-		}
-		if owner == "" {
-			return nil, apperr.Conflict("credentials_required", "Save your Confluent Cloud API key before tearing this demo down")
-		}
-	}
-	if owner == "" {
-		owner = state.CredsOwner
+	owner, err := credsOwner(ctx, svc, state, user, state.NeedsConfluent, "tearing this demo down")
+	if err != nil {
+		return nil, err
 	}
 
 	runID, err := newRunID()
@@ -214,7 +200,7 @@ func RequestTeardown(ctx context.Context, svc *services.Services, demoID string,
 	}}, db.And(
 		db.Equal("runId", state.RunID),
 		db.Equal("status", previous),
-		db.OneOf("status", Running, LaunchFailed, TeardownFailed),
+		db.OneOf("status", Running, LaunchFailed, UpdateFailed, TeardownFailed),
 	))
 	if errors.Is(err, db.ErrConditionFailed) {
 		return nil, apperr.Conflict("not_tearable", fmt.Sprintf("The demo is %s and cannot be torn down now", previous))
@@ -223,21 +209,113 @@ func RequestTeardown(ctx context.Context, svc *services.Services, demoID string,
 		return nil, err
 	}
 	svc.Metrics.Count("DemoTeardownRequested", "demo", demoID)
-	if err := start(ctx, svc, demoID, runID, TeardownFailed); err != nil {
+	if err := start(ctx, svc, demoID, runID, TeardownFailed, ""); err != nil {
 		return nil, err
 	}
 	current, err := GetRaw(ctx, svc, demoID)
 	return current.Public(), err
 }
 
-func start(ctx context.Context, svc *services.Services, demoID, runID, failedStatus string) error {
+// credsOwner is whose Confluent Cloud key a run of a deployed demo uses: the key
+// of the person who launched it, or else the key of the person asking. Terraform
+// needs the same Confluent Cloud account that created things. A demo that needs
+// no key keeps the owner it has.
+func credsOwner(ctx context.Context, svc *services.Services, state *State, user *users.User, needsConfluent bool, doing string) (string, error) {
+	if !needsConfluent {
+		return state.CredsOwner, nil
+	}
+	for _, candidate := range []string{state.LaunchedBy, user.Email} {
+		status, err := credentials.GetStatus(ctx, svc, candidate)
+		if err != nil {
+			return "", err
+		}
+		if status.Configured {
+			return candidate, nil
+		}
+	}
+	return "", apperr.Conflict("credentials_required", "Save your Confluent Cloud API key before "+doing)
+}
+
+// RequestUpdate records an update of a deployed demo to the newest commit, and starts the runner.
+//
+// It re-reads the repository first, so a commit pushed a moment ago is the one
+// that is applied, not the one the catalog cached up to CacheSeconds ago.
+func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, user *users.User) (*Public, error) {
+	state, err := GetRaw(ctx, svc, demoID)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		return nil, apperr.NotFound("The demo is not deployed")
+	}
+	if user.Role != users.Admin && user.Email != state.LaunchedBy {
+		return nil, apperr.Forbidden("Only the person who launched a demo, or an admin, can update it")
+	}
+	if state.Status != Running && state.Status != UpdateFailed {
+		return nil, apperr.Conflict("not_updatable", fmt.Sprintf("The demo is %s and cannot be updated now", state.Status))
+	}
+
+	if _, err := catalog.List(ctx, svc, true); err != nil {
+		svc.Log.Error("Could not read the repository for an update", "demo", demoID, "error", err)
+		return nil, apperr.New(502, "catalog_unavailable", "The repository could not be read. Try again")
+	}
+	demo, err := catalog.Get(ctx, svc, demoID)
+	if err != nil {
+		return nil, err
+	}
+	if demo == nil {
+		return nil, apperr.Conflict("demo_removed", "The demo is no longer in the repository, so it can only be torn down")
+	}
+	if !demo.Valid {
+		return nil, apperr.Conflict("invalid_demo", "This demo does not follow the Launchpad interface: "+strings.Join(demo.Problems, "; "))
+	}
+	if state.Status == Running && state.Ref == demo.Ref {
+		return nil, apperr.Conflict("up_to_date", "The demo is already at the latest commit")
+	}
+	// The resources that exist were made with the old code, and the new code may want a key too.
+	needsConfluent := state.NeedsConfluent || demo.NeedsConfluent
+	owner, err := credsOwner(ctx, svc, state, user, needsConfluent, "updating this demo")
+	if err != nil {
+		return nil, err
+	}
+
+	runID, err := newRunID()
+	if err != nil {
+		return nil, err
+	}
+	previous := state.Status
+	_, err = svc.DB.Update(ctx, key(demoID), "STATE", db.Update{Set: map[string]any{
+		"status": Updating, "action": Apply, "runId": runID, "ref": demo.Ref, "path": demo.Path,
+		"needsConfluent": needsConfluent, "credsOwner": owner, "resumes": 0,
+		"updatedAt": svc.Now(), "error": "", "logTail": "",
+	}}, db.And(
+		db.Equal("runId", state.RunID),
+		db.Equal("status", previous),
+		db.OneOf("status", Running, UpdateFailed),
+	))
+	if errors.Is(err, db.ErrConditionFailed) {
+		return nil, apperr.Conflict("not_updatable", "The demo changed while the update was being requested. Try again")
+	}
+	if err != nil {
+		return nil, err
+	}
+	svc.Metrics.Count("DemoUpdateRequested", "demo", demoID)
+	if err := start(ctx, svc, demoID, runID, UpdateFailed, state.URL); err != nil {
+		return nil, err
+	}
+	current, err := GetRaw(ctx, svc, demoID)
+	return current.Public(), err
+}
+
+// start invokes the runner. If it cannot, the run ends in failedStatus, keeping the address the demo had.
+func start(ctx context.Context, svc *services.Services, demoID, runID, failedStatus, url string) error {
 	err := invoke(ctx, svc, demoID, runID, 0)
 	if err == nil {
 		return nil
 	}
 	// The runner could not even be started.
 	svc.Log.Error("Could not start the runner", "demo", demoID, "error", err)
-	if _, finishErr := Finish(ctx, svc, demoID, runID, failedStatus, Outcome{Error: fmt.Sprintf("Could not start the runner: %T", err)}); finishErr != nil {
+	if _, finishErr := Finish(ctx, svc, demoID, runID, failedStatus, Outcome{URL: url, Error: fmt.Sprintf("Could not start the runner: %T", err)}); finishErr != nil {
 		svc.Log.Error("Could not record that the runner did not start", "demo", demoID, "error", finishErr)
 	}
 	return apperr.New(502, "runner_unavailable", "The deployment worker could not be started. Try again")
