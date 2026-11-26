@@ -1,0 +1,45 @@
+# Tests the EmitAfterGap Flink function of the automated API diagnosis demo and checks that
+# the jar committed beside the Terraform is the one its source builds.
+#
+# Launchpad's runner has no Java toolchain, so Terraform uploads a committed jar
+# (demos/automated-api-diagnosis/tf/udf/emit-after-gap.jar) to Confluent Cloud instead of
+# building one. build.sh builds in a pinned Maven image with a fixed timestamp, so the
+# same source gives the same bytes. When this fails, run build.sh and commit the jar.
+name: Automated API diagnosis function
+
+on:
+  push:
+    branches: [main, launchpad]
+    paths:
+      - 'demos/automated-api-diagnosis/udf/**'
+      - 'demos/automated-api-diagnosis/tf/udf/**'
+      - '.github/workflows/automated-api-diagnosis-udf.yml'
+  pull_request:
+    paths:
+      - 'demos/automated-api-diagnosis/udf/**'
+      - 'demos/automated-api-diagnosis/tf/udf/**'
+      - '.github/workflows/automated-api-diagnosis-udf.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automated-api-diagnosis-udf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jar:
+    name: emit-after-gap
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test and build the jar
+        run: demos/automated-api-diagnosis/udf/emit-after-gap/build.sh
+
+      - name: Check the committed jar is the one the source builds
+        run: |
+          if ! git diff --exit-code --stat -- demos/automated-api-diagnosis/tf/udf/emit-after-gap.jar; then
+            echo "::error::tf/udf/emit-after-gap.jar is not what the source builds. Run udf/emit-after-gap/build.sh and commit the jar."
+            exit 1
+          fi
