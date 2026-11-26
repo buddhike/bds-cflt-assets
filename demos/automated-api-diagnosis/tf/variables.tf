@@ -81,3 +81,9 @@ variable "bedrock_region" {
   type        = string
   default     = "ap-southeast-2"
 }
+
+variable "udf_release_repository" {
+  description = "The GitHub repository (owner/name) whose releases hold the EmitAfterGap jar. The automated-api-diagnosis-udf workflow publishes it there."
+  type        = string
+  default     = "buddhike/bds-cflt-assets"
+}

@@ -17,7 +17,7 @@ go vet ./... && go test -race ./...         # Go unit tests: no cloud account ne
 cd frontend && npm ci && npm run build     # the UI, which the server binary embeds
 cd tf && terraform init -backend=false && terraform validate && terraform test   # task definition and Flink statements against mock providers
 docker build -f docker/Dockerfile -t automated-api-diagnosis .
-udf/emit-after-gap/build.sh                # test the Flink function and rebuild tf/udf/emit-after-gap.jar (Docker)
+udf/emit-after-gap/build.sh                # test the Flink function and build its jar (Docker)
 ```
 
 ## Architecture
@@ -42,7 +42,7 @@ Data path: `simulator → gateway-logs (Avro) → Flink detect_anomalies → api
 - **Secrets**: they reach the container only through Secrets Manager. `server.Config` redacts itself in `String`/`LogValue`. The app has no AWS permissions.
 - **One task**: `desired_count = 1` with `deployment_maximum_percent = 100`, so there are never two simulators.
 - **The agent's Bedrock credential is made by Terraform and goes nowhere else**: `aws_iam_access_key.flink_llm` → `confluent_flink_connection.bedrock`, the key only allowed to invoke the one model. No literal key in the tree, no output, no Flink statement or Secrets Manager entry carrying it (`contract_test.go` checks). It is in Terraform's state, like the demo's other secrets. The prompt in `tf/flink/ai_agent.sql` is the user's: don't reword it.
-- **`EmitAfterGap` is a committed jar** (`tf/udf/emit-after-gap.jar`) because Launchpad's runner has no Java. Its source is `udf/emit-after-gap/`: after changing it run `udf/emit-after-gap/build.sh` (needs Docker; it tests and builds in a pinned Maven image, reproducibly) and commit the jar. `.github/workflows/automated-api-diagnosis-udf.yml` fails when the jar is not what the source builds. A new jar reaches a running demo only after teardown and a new launch. `ai_reports` reads `api_anomalies`, a table (not a view: a process table function takes a table), made by `create_anomalies.sql`.
+- **`EmitAfterGap` is a release, not a committed file.** Launchpad's runner has no Java. `.github/workflows/automated-api-diagnosis-udf.yml` builds `udf/emit-after-gap/` on a push and publishes the jar as the release `emit-after-gap-<hash>`, where `<hash>` is of `pom.xml`, `build.sh` and `src/main/**` from `tf/modules/udf-release`. `tf/ai.tf` runs the same module, so Terraform asks for exactly that release; keep the workflow and `ai.tf` on the one module, and never edit or delete a release. A launch before the workflow finishes fails with a 404 message: launch again. A new jar reaches a running demo only after teardown and a new launch. `ai_reports` reads `api_anomalies`, a table (not a view: a process table function takes a table), made by `create_anomalies.sql`.
 
 ## Conventions
 

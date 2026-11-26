@@ -1,7 +1,6 @@
 package server
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -211,28 +210,35 @@ func TestReportStatementWaitsForWhatItUses(t *testing.T) {
 	}
 }
 
-// The function is registered by class name from a committed jar, and nothing else checks
-// that the two agree.
-func TestEmitAfterGapJarHasItsClass(t *testing.T) {
-	r, err := zip.OpenReader("../../tf/udf/emit-after-gap.jar")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	found := false
-	for _, f := range r.File {
-		if f.Name == "org/example/EmitAfterGap.class" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("tf/udf/emit-after-gap.jar has no org/example/EmitAfterGap.class")
-	}
+// The function is registered by class name from a jar that a workflow builds from
+// udf/emit-after-gap, and nothing else checks that the SQL and the source agree.
+func TestEmitAfterGapIsWhatTheSQLRegisters(t *testing.T) {
 	if !strings.Contains(readFile(t, "../../tf/flink/create_emit_after_gap.sql.tftpl"), "'org.example.EmitAfterGap'") {
-		t.Error("the CREATE FUNCTION statement names a class the jar does not have")
+		t.Error("the CREATE FUNCTION statement does not name org.example.EmitAfterGap")
 	}
 	src := readFile(t, "../../udf/emit-after-gap/src/main/java/org/example/EmitAfterGap.java")
 	if !strings.Contains(src, "package org.example;") || !strings.Contains(src, "public class EmitAfterGap extends ProcessTableFunction") {
 		t.Error("udf/emit-after-gap no longer defines org.example.EmitAfterGap, which the CREATE FUNCTION statement names")
+	}
+}
+
+// Terraform and the release workflow must name the jar's release with one definition, or a
+// launch asks for a release the workflow never makes. No jar may be committed either: the
+// release is the only source of it.
+func TestEmitAfterGapReleaseIsNamedByOneModule(t *testing.T) {
+	ai := readFile(t, "../../tf/ai.tf")
+	if !strings.Contains(ai, `source     = "./modules/udf-release"`) || !strings.Contains(ai, "module.udf_release.tag") {
+		t.Error("tf/ai.tf must take the release tag from modules/udf-release")
+	}
+	if !strings.Contains(ai, "/releases/download/${module.udf_release.tag}/emit-after-gap.jar") {
+		t.Error("tf/ai.tf must download emit-after-gap.jar from the release the module names")
+	}
+	wf := readFile(t, "../../../../.github/workflows/automated-api-diagnosis-udf.yml")
+	if !strings.Contains(wf, "demos/automated-api-diagnosis/tf/modules/udf-release") || !strings.Contains(wf, `gh release create "$TAG"`) {
+		t.Error("the udf workflow must name its release with modules/udf-release")
+	}
+	jars, _ := filepath.Glob("../../tf/udf/*.jar")
+	if len(jars) > 0 {
+		t.Errorf("a jar is committed (%v): the workflow publishes it as a release instead", jars)
 	}
 }

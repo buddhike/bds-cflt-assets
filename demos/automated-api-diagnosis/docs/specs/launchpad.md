@@ -81,13 +81,18 @@ beyond the ECS execution role.
   `ai_agent.sql`. The agent is told to make up its findings: it has no tools and sees
   nothing of the infrastructure.
 * **`EmitAfterGap`** is a Java process table function, a Maven project in
-  `udf/emit-after-gap/` (Flink 2.3, Java 11, with unit tests). Terraform uploads its jar
-  (`tf/udf/emit-after-gap.jar`) as a Confluent artifact and registers it with
-  `CREATE FUNCTION`. The jar is committed because the runner has no Java toolchain.
-  `udf/emit-after-gap/build.sh` tests and builds it in a pinned Maven image, so the same
-  source gives the same bytes, and a CI workflow fails if the committed jar is not what the
-  source builds. Terraform registers the function once, so a new jar reaches a running demo
-  only after teardown and a new launch.
+  `udf/emit-after-gap/` (Flink 2.3, Java 11, with unit tests). Its jar is not in the
+  repository, because the runner has no Java toolchain. A GitHub workflow builds it on a
+  push and publishes it as the release `emit-after-gap-<hash>`, where the hash is of the
+  function's source (`tf/modules/udf-release`). Terraform computes the same tag from the
+  source it was launched with, downloads the jar from that release (`data "http"`, written
+  to disk by `local_file`), uploads it as a Confluent artifact and registers it with
+  `CREATE FUNCTION`. Nothing committed names a jar, an old commit still finds its own, and
+  the workflow never replaces a release, and checks that an existing one still holds what the source builds. The release exists a minute or two after a change
+  to the function is pushed: a launch before then fails with a message saying so. Terraform
+  registers the function once, so a new jar reaches a running demo only after teardown and
+  a new launch. Launching needs GitHub to be reachable from the runner, and `terraform
+  destroy` does not: the download is only checked when the jar is written.
 * The first report appears after the detector has its five-minute baseline, an API is
   broken, and the model answers.
 

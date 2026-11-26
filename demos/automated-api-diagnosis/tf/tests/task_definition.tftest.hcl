@@ -103,6 +103,19 @@ mock_provider "random" {
 
 mock_provider "time" {}
 
+# The jar is downloaded from a GitHub release. The mock stands for a published one: a zip
+# (it starts with "PK") of a plausible size.
+mock_provider "http" {
+  mock_data "http" {
+    defaults = {
+      status_code          = 200
+      response_body_base64 = "UEsDBHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA=="
+    }
+  }
+}
+
+mock_provider "local" {}
+
 variables {
   aws_region                 = "us-east-1"
   launchpad_tags             = { "launchpad:managed" = "true", "launchpad:demo" = "automated-api-diagnosis" }
@@ -220,6 +233,51 @@ run "ai_agent" {
     condition     = strcontains(confluent_flink_statement.emit_after_gap.statement, "confluent-artifact://${confluent_flink_artifact.emit_after_gap.id}")
     error_message = "the function must be registered from the artifact Terraform uploaded"
   }
+}
+
+run "emit_after_gap_jar" {
+  command = apply
+
+  # The tag is a hash of the function's source, so nothing committed has to name a jar.
+  assert {
+    condition     = can(regex("^https://github\\.com/buddhike/bds-cflt-assets/releases/download/emit-after-gap-[0-9a-f]{16}/emit-after-gap\\.jar$", data.http.emit_after_gap_jar.url))
+    error_message = "the jar comes from the release named by the source hash"
+  }
+
+  assert {
+    condition     = confluent_flink_artifact.emit_after_gap.artifact_file == local_file.emit_after_gap_jar.filename
+    error_message = "the artifact is the downloaded jar"
+  }
+}
+
+run "emit_after_gap_jar_not_published_yet" {
+  command = plan
+
+  override_data {
+    target = data.http.emit_after_gap_jar
+    values = {
+      status_code          = 404
+      response_body_base64 = "Tm90IEZvdW5k"
+    }
+  }
+
+  # A launch ahead of the release workflow must fail with a message that says what to do,
+  # not upload a "Not Found" page as a jar.
+  expect_failures = [local_file.emit_after_gap_jar]
+}
+
+run "emit_after_gap_download_is_not_a_jar" {
+  command = plan
+
+  override_data {
+    target = data.http.emit_after_gap_jar
+    values = {
+      status_code          = 200
+      response_body_base64 = "PGh0bWw+Y2FwdGl2ZSBwb3J0YWw8L2h0bWw+"
+    }
+  }
+
+  expect_failures = [local_file.emit_after_gap_jar]
 }
 
 run "bedrock_region_and_model" {

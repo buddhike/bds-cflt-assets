@@ -13,6 +13,14 @@ terraform {
       source  = "confluentinc/confluent"
       version = "~> 2.90"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"

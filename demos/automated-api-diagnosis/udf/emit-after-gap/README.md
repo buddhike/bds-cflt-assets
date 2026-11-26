@@ -13,26 +13,34 @@ EmitAfterGap(
 )
 ```
 
-## Build
+## Build and release
 
 ```sh
-./build.sh
+./build.sh      # test, and build target/emit-after-gap.jar (needs only Docker)
 ```
 
-Needs only Docker. It runs the tests and builds `target/emit-after-gap.jar` in a pinned
-Maven image (Java 17, compiling for Java 11, which Confluent Cloud runs), then copies it to
-[`../../tf/udf/emit-after-gap.jar`](../../tf/udf/emit-after-gap.jar). **Commit that jar with
-your change.** Launchpad's runner has no Java, so Terraform uploads the committed jar
-rather than building one. The build is reproducible (fixed timestamp, pinned image), and
-`.github/workflows/automated-api-diagnosis-udf.yml` fails when the committed jar is not what
-the source builds.
+It runs the tests and builds the jar in a pinned Maven image (Java 17, compiling for
+Java 11, which Confluent Cloud runs). Flink is `provided`: Confluent Cloud supplies it, so
+the jar holds only this class.
 
-Flink is `provided`: Confluent Cloud supplies it, so the jar holds only this class.
+You do not publish the jar yourself, and it is not committed. Launchpad's runner has no
+Java, so `.github/workflows/automated-api-diagnosis-udf.yml` does it: on every push to
+`main` or `launchpad` that touches this directory it builds, tests and publishes a GitHub
+release named `emit-after-gap-<hash>`. The hash is of `pom.xml`, `build.sh` and `src/main/**`, computed
+by the Terraform module [`tf/modules/udf-release`](../../tf/modules/udf-release), which the
+workflow runs and Terraform uses too, so they always agree on the name. A release is never
+replaced and nothing has to be committed to say which jar a commit wants: change the source
+and push.
+
+The release appears a minute or two after the push. A launch before then fails with a
+message saying the jar is not published yet: launch again when the workflow has finished.
+Do not delete a release: a commit whose source hashes to it needs it.
 
 ## Deployment
 
-`tf/ai.tf` does it, as part of the demo: `confluent_flink_artifact` uploads the jar, and the
-statement from `tf/flink/create_emit_after_gap.sql.tftpl` runs
+`tf/ai.tf` does it, as part of the demo. It computes the release tag from this source,
+downloads `emit-after-gap.jar` from that release, uploads it with `confluent_flink_artifact`,
+and the statement from `tf/flink/create_emit_after_gap.sql.tftpl` runs
 
 ```sql
 CREATE FUNCTION EmitAfterGap AS 'org.example.EmitAfterGap' USING JAR 'confluent-artifact://<artifact id>'

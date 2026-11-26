@@ -29,7 +29,8 @@ an IAM user that may invoke only that model, whose key goes straight into the Fl
 connection. No credential is in the repository, and none is printed. See [tf/ai.tf](tf/ai.tf).
 The agent writes a report for an API and HTTP status at most once every five minutes. That
 limit is `EmitAfterGap`, a custom Flink function whose Java project is in
-[udf/emit-after-gap](udf/emit-after-gap); run its `build.sh` (needs Docker) after changing it.
+[udf/emit-after-gap](udf/emit-after-gap). A GitHub workflow publishes its jar as a release
+and Terraform downloads it, so there is nothing to build or commit by hand.
 
 ## Develop
 
