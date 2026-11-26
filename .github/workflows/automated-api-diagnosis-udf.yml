@@ -1,10 +1,19 @@
-# Tests the EmitAfterGap Flink function of the automated API diagnosis demo and checks that
-# the jar committed beside the Terraform is the one its source builds.
+# Builds the EmitAfterGap Flink function of the automated API diagnosis demo and publishes
+# its jar as a GitHub release, which Terraform downloads when it launches the demo.
 #
-# Launchpad's runner has no Java toolchain, so Terraform uploads a committed jar
-# (demos/automated-api-diagnosis/tf/udf/emit-after-gap.jar) to Confluent Cloud instead of
-# building one. build.sh builds in a pinned Maven image with a fixed timestamp, so the
-# same source gives the same bytes. When this fails, run build.sh and commit the jar.
+# Launchpad's runner has no Java toolchain, so the jar cannot be built where the demo is
+# deployed, and it is not committed. Instead:
+#
+#   push to main or launchpad ──► build + test ──► release emit-after-gap-<hash>
+#
+# <hash> comes from the Terraform module demos/automated-api-diagnosis/tf/modules/udf-release,
+# which hashes the function's source. Terraform runs the same module, so it asks for exactly
+# the release this workflow creates, and no commit has to name a jar. A release is never
+# replaced: the same source always has the same tag, so a push that does not change the
+# function finds its release already there and does nothing. Old commits keep their jar.
+#
+# The release appears a minute or two after a push that changes the function. A launch in
+# that window fails with a message saying so; launch again once this workflow is done.
 name: Automated API diagnosis function
 
 on:
@@ -12,34 +21,100 @@ on:
     branches: [main, launchpad]
     paths:
       - 'demos/automated-api-diagnosis/udf/**'
-      - 'demos/automated-api-diagnosis/tf/udf/**'
+      - 'demos/automated-api-diagnosis/tf/modules/udf-release/**'
       - '.github/workflows/automated-api-diagnosis-udf.yml'
   pull_request:
     paths:
       - 'demos/automated-api-diagnosis/udf/**'
-      - 'demos/automated-api-diagnosis/tf/udf/**'
+      - 'demos/automated-api-diagnosis/tf/modules/udf-release/**'
       - '.github/workflows/automated-api-diagnosis-udf.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
+  # One release at a time: two runs must not both create the same tag.
   group: automated-api-diagnosis-udf-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  jar:
-    name: emit-after-gap
+  build:
+    name: build and test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Test and build the jar
-        run: demos/automated-api-diagnosis/udf/emit-after-gap/build.sh
+      # Runs the unit tests and builds target/emit-after-gap.jar in a pinned Maven image.
+      - run: demos/automated-api-diagnosis/udf/emit-after-gap/build.sh
 
-      - name: Check the committed jar is the one the source builds
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: emit-after-gap-jar
+          path: demos/automated-api-diagnosis/udf/emit-after-gap/target/emit-after-gap.jar
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: publish the release
+    needs: build
+    # Pull requests build and test but publish nothing, and a manual run publishes only
+    # from the two branches whose commits Launchpad launches: a release is never replaced,
+    # so whoever publishes a tag first decides what its jar is.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/launchpad')
+    # One publisher at a time across branches, so two runs cannot both create a tag.
+    concurrency:
+      group: automated-api-diagnosis-udf-release
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release and its tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          # The version Launchpad's runner uses.
+          terraform_version: 1.16.3
+          terraform_wrapper: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: emit-after-gap-jar
+          path: dist
+
+      - name: Name the release the way Terraform does
+        id: tag
+        working-directory: demos/automated-api-diagnosis/tf/modules/udf-release
         run: |
-          if ! git diff --exit-code --stat -- demos/automated-api-diagnosis/tf/udf/emit-after-gap.jar; then
-            echo "::error::tf/udf/emit-after-gap.jar is not what the source builds. Run udf/emit-after-gap/build.sh and commit the jar."
-            exit 1
+          terraform init -backend=false -input=false
+          terraform apply -auto-approve -input=false -state="$RUNNER_TEMP/udf-release.tfstate" \
+            -var "source_dir=$GITHUB_WORKSPACE/demos/automated-api-diagnosis/udf/emit-after-gap"
+          echo "tag=$(terraform output -raw -state="$RUNNER_TEMP/udf-release.tfstate" tag)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the jar, unless this source already has its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The build is reproducible, so the published jar must be what this source
+            # builds. A difference means the release was changed after it was published,
+            # and Terraform would run whatever is there: fail so someone looks.
+            gh release download "$TAG" --pattern emit-after-gap.jar --dir published
+            if [ "$(sha256sum < published/emit-after-gap.jar)" != "$(sha256sum < dist/emit-after-gap.jar)" ]; then
+              echo "::error::Release $TAG holds a jar that this source does not build."
+              exit 1
+            fi
+            echo "Release $TAG exists and matches this source's build."
+            exit 0
           fi
+          gh release create "$TAG" dist/emit-after-gap.jar \
+            --target "$GITHUB_SHA" \
+            --title "EmitAfterGap ($TAG)" \
+            --notes "The EmitAfterGap Flink function of the automated API diagnosis demo, built from commit $GITHUB_SHA. Terraform downloads it by this tag when it launches the demo. Do not edit or delete it: commits that use this source need it." \
+            --latest=false
