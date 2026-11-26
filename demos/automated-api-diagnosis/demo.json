@@ -1,4 +1,9 @@
 {
   "name": "Automated API diagnosis",
-  "description": "Break simulated APIs and watch Flink detect the unhealthy ones in Confluent Cloud, while an AI agent writes up the diagnosis."
+  "description": "Break simulated APIs and watch Flink detect the unhealthy ones in Confluent Cloud, while an AI agent writes up the diagnosis.",
+  "tags": [
+    "Apache Kafka",
+    "Schema Registry",
+    "Apache Flink"
+  ]
 }
