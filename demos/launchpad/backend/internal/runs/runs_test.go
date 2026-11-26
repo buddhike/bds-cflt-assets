@@ -449,30 +449,31 @@ func TestARunnerThatCannotStartLeavesAFailedUpdate(t *testing.T) {
 	}
 }
 
-func TestUpdateUsesTheLaunchersCredentialsOrFallsBackToTheRequester(t *testing.T) {
+func TestUpdateUsesTheLaunchersCredentialsAndNoOnesElse(t *testing.T) {
 	env := fixture(t)
 	withCreds(t, env, ann.Email)
+	withCreds(t, env, boss.Email)
 	launched(t, env, "pims", ann.Email)
 	push(env, pushed)
-	if _, err := runs.RequestUpdate(ctx, env.Services, "pims", boss); err != nil { // boss has none, ann still does
+	// Both have a key, and the admin asks: the key is still the launcher's.
+	if _, err := runs.RequestUpdate(ctx, env.Services, "pims", boss); err != nil {
 		t.Fatal(err)
 	}
 	if got := raw(t, env, "pims").CredsOwner; got != ann.Email {
 		t.Fatalf("credentials of %q", got)
 	}
 	_, _ = runs.Finish(ctx, env.Services, "pims", raw(t, env, "pims").RunID, runs.UpdateFailed, runs.Outcome{Error: "x"})
+
+	// The launcher's key is gone. The admin's would run against resources in the launcher's account.
 	_ = credentials.Delete(ctx, env.Services, ann.Email)
 	_, err := runs.RequestUpdate(ctx, env.Services, "pims", boss)
 	wantAPIError(t, err, 409, "credentials_required")
-	if got := raw(t, env, "pims").Status; got != runs.UpdateFailed {
-		t.Fatalf("status %q", got)
+	if got := raw(t, env, "pims"); got.Status != runs.UpdateFailed || got.CredsOwner != ann.Email {
+		t.Fatalf("state %+v", got)
 	}
-	withCreds(t, env, boss.Email)
+	withCreds(t, env, ann.Email)
 	if _, err := runs.RequestUpdate(ctx, env.Services, "pims", boss); err != nil {
 		t.Fatal(err)
-	}
-	if got := raw(t, env, "pims").CredsOwner; got != boss.Email {
-		t.Fatalf("credentials of %q", got)
 	}
 }
 

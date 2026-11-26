@@ -196,7 +196,9 @@ func RequestTeardown(ctx context.Context, svc *services.Services, demoID string,
 		return nil, apperr.Forbidden("Only the person who launched a demo, or an admin, can tear it down")
 	}
 
-	owner, err := credsOwner(ctx, svc, state, user, state.NeedsConfluent, "tearing this demo down")
+	// Destroying must stay possible when the launcher's key is gone, so the requester's will do.
+	owner, err := credsOwner(ctx, svc, state, []string{state.LaunchedBy, user.Email}, state.NeedsConfluent,
+		"Save your Confluent Cloud API key before tearing this demo down")
 	if err != nil {
 		return nil, err
 	}
@@ -228,15 +230,14 @@ func RequestTeardown(ctx context.Context, svc *services.Services, demoID string,
 	return current.Public(), err
 }
 
-// credsOwner is whose Confluent Cloud key a run of a deployed demo uses: the key
-// of the person who launched it, or else the key of the person asking. Terraform
-// needs the same Confluent Cloud account that created things. A demo that needs
-// no key keeps the owner it has.
-func credsOwner(ctx context.Context, svc *services.Services, state *State, user *users.User, needsConfluent bool, doing string) (string, error) {
+// credsOwner is whose Confluent Cloud key a run of a deployed demo uses: the first
+// of the candidates who has saved one. Terraform needs the same Confluent Cloud
+// account that created things. A demo that needs no key keeps the owner it has.
+func credsOwner(ctx context.Context, svc *services.Services, state *State, candidates []string, needsConfluent bool, problem string) (string, error) {
 	if !needsConfluent {
 		return state.CredsOwner, nil
 	}
-	for _, candidate := range []string{state.LaunchedBy, user.Email} {
+	for _, candidate := range candidates {
 		status, err := credentials.GetStatus(ctx, svc, candidate)
 		if err != nil {
 			return "", err
@@ -245,7 +246,7 @@ func credsOwner(ctx context.Context, svc *services.Services, state *State, user 
 			return candidate, nil
 		}
 	}
-	return "", apperr.Conflict("credentials_required", "Save your Confluent Cloud API key before "+doing)
+	return "", apperr.Conflict("credentials_required", problem)
 }
 
 // RequestUpdate records an update of a deployed demo to the newest commit, and starts the runner.
@@ -286,7 +287,10 @@ func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, u
 	}
 	// The resources that exist were made with the old code, and the new code may want a key too.
 	needsConfluent := state.NeedsConfluent || demo.NeedsConfluent
-	owner, err := credsOwner(ctx, svc, state, user, needsConfluent, "updating this demo")
+	// An update creates and changes things, so only the key of the Confluent Cloud account that
+	// made them will do. Another person's key would be pointed at resources that are not theirs.
+	owner, err := credsOwner(ctx, svc, state, []string{state.LaunchedBy}, needsConfluent,
+		"The person who launched this demo must save their Confluent Cloud API key before it can be updated")
 	if err != nil {
 		return nil, err
 	}

@@ -215,9 +215,15 @@ last updated at until somebody asks for an update.
    up_to_date`), so a click that has nothing to apply does not start a run. An
    `update_failed` demo can always be retried, even at the same `ref`.
 4. A demo that needs Confluent Cloud, at the old commit or the new one, is
-   applied with the key of the person who launched it, or else the key of the
-   person updating it, and `credentials_required` if neither saved one. A
-   `credsOwner` already recorded is not enough: the key may have been deleted since.
+   applied with the key of the person who launched it, and with no one else's:
+   an update creates and changes things, and another person's key would be
+   pointed at resources in an account that is not theirs. If the launcher has no
+   saved key the answer is `409 credentials_required`, and the launcher saves
+   one and tries again. (A teardown, which only deletes, also accepts the key of
+   whoever asks, so that a demo can always be removed.) A `credsOwner` already
+   recorded is not enough: the key may have been deleted since. An admin who
+   updates another person's demo therefore spends that person's saved key, as
+   a teardown does.
 5. It sets `status=updating` with a fresh `runId`, and copies `ref`, `version`
    and `path` from the new catalog entry. `needsConfluent` becomes true if the old
    code or the new code needs a key, and stays true after that. `launchedBy` and `url` are left as
