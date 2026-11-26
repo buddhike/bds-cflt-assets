@@ -49,7 +49,7 @@ for (const [theme, t] of Object.entries(themes)) {
     need(`--${fg} on a 12% tint of itself over --bg`, fg, mix(t[fg], t.bg, 0.12), 4.5);
   }
   for (let i = 1; i <= 5; i++) need(`--s${i} on --surface`, `s${i}`, 'surface', 3);
-  for (const fg of ['code-text', 'code-muted', 'code-keyword', 'code-type', 'code-string', 'code-number', 'code-warn', 'code-error']) {
+  for (const fg of ['code-text', 'code-muted', 'code-keyword', 'code-type', 'code-builtin', 'code-ident', 'code-string', 'code-number', 'code-warn', 'code-error']) {
     need(`--${fg} on --code-bg`, fg, 'code-bg', 4.5);
   }
 }

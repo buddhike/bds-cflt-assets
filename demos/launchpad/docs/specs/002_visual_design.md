@@ -120,7 +120,8 @@ add a legend or a direct label: colour alone does not name a series.
 ### Code and logs
 
 `--code-bg`, `--code-text`, `--code-muted`, `--code-keyword`, `--code-type`,
-`--code-string`, `--code-number`, `--code-warn`, `--code-error`. They follow the
+`--code-builtin`, `--code-ident`, `--code-string`, `--code-number`, `--code-warn`,
+`--code-error`. They follow the
 theme (a light panel in light mode, a dark one in dark mode), and every one is
 4.5:1 on `--code-bg`. SQL editors, logs and any other code use only these.
 
