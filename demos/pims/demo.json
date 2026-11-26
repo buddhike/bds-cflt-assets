@@ -1,4 +1,4 @@
 {
   "name": "PIMS",
-  "description": "A clinic's MySQL database streamed by Debezium into Confluent Cloud, and materialised as Iceberg tables by Tableflow. Simulates patients, appointments and visits, charts how fresh the tables are, and lets you query them with DuckDB."
+  "description": "Stream a clinic's MySQL database into Iceberg tables with Debezium and Tableflow, watch how fresh they are, and query them with DuckDB."
 }
