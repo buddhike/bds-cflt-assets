@@ -1,4 +1,4 @@
-CREATE TABLE api_unhealthy_events (
+CREATE TABLE IF NOT EXISTS api_unhealthy_events (
   api_id STRING NOT NULL,
   detected_at TIMESTAMP_LTZ(3) NOT NULL,
   http_status STRING NOT NULL,

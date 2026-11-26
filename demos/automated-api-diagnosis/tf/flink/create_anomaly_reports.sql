@@ -1,4 +1,4 @@
-CREATE TABLE api_anomaly_ai_reports (
+CREATE TABLE IF NOT EXISTS api_anomaly_ai_reports (
   api_id STRING NOT NULL,
   http_status STRING NOT NULL,
   detected_at TIMESTAMP_LTZ(3) NOT NULL,

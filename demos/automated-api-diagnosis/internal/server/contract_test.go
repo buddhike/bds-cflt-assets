@@ -103,10 +103,10 @@ func TestTopicNamesAgree(t *testing.T) {
 	if !strings.Contains(readFile(t, "../../tf/flink/detect_anomalies.sql"), "INSERT INTO "+UnhealthyEventsTopic) {
 		t.Errorf("the detector does not write %s, which the monitor reads", UnhealthyEventsTopic)
 	}
-	if !strings.Contains(readFile(t, "../../tf/flink/create_anomaly_reports.sql"), "CREATE TABLE "+AnomalyReportsTopic) {
+	if !strings.Contains(readFile(t, "../../tf/flink/create_anomaly_reports.sql"), "CREATE TABLE IF NOT EXISTS "+AnomalyReportsTopic) {
 		t.Errorf("no table %s, which the reports tab reads", AnomalyReportsTopic)
 	}
-	if !strings.Contains(readFile(t, "../../tf/flink/create_unhealthy_events.sql"), "CREATE TABLE "+UnhealthyEventsTopic) {
+	if !strings.Contains(readFile(t, "../../tf/flink/create_unhealthy_events.sql"), "CREATE TABLE IF NOT EXISTS "+UnhealthyEventsTopic) {
 		t.Errorf("no table %s, which the monitor reads", UnhealthyEventsTopic)
 	}
 }
@@ -240,5 +240,26 @@ func TestEmitAfterGapReleaseIsNamedByOneModule(t *testing.T) {
 	jars, _ := filepath.Glob("../../tf/udf/*.jar")
 	if len(jars) > 0 {
 		t.Errorf("a jar is committed (%v): the workflow publishes it as a release instead", jars)
+	}
+}
+
+// Terraform replaces a Flink statement when its text changes, which an update of a running
+// demo does: it deletes the statement and runs the new one. A plain CREATE TABLE then fails
+// because the table is already there, and the update fails with it. So a statement that only
+// creates a table must be repeatable. (A CREATE TABLE ... AS SELECT is not covered: it is
+// also the long-running query, and IF NOT EXISTS would skip starting it.)
+func TestTableStatementsCanBeRepeated(t *testing.T) {
+	files, _ := filepath.Glob("../../tf/flink/create_*.sql")
+	if len(files) == 0 {
+		t.Fatal("no tf/flink/create_*.sql found")
+	}
+	for _, f := range files {
+		sql := readFile(t, f)
+		if !strings.Contains(sql, "CREATE TABLE") || regexp.MustCompile(`(?is)\bAS\s+SELECT\b`).MatchString(sql) {
+			continue
+		}
+		if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS") {
+			t.Errorf("%s must say CREATE TABLE IF NOT EXISTS: an update that changes it re-runs it on a table that exists", f)
+		}
 	}
 }
