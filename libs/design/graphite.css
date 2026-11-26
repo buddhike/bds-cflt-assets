@@ -277,6 +277,7 @@ pre code { padding: 0; background: none; }
   text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px;
 }
 :is(button, .button).link:hover:not(:disabled) { background: none; text-decoration-color: currentColor; }
+:is(button, .button)[aria-pressed="true"] { color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border-color: var(--accent); }
 :is(button, .button).sm { height: calc(var(--ctl-h) - 6px); padding: 0 10px; font-size: var(--fs-small); }
 button svg, .button svg { width: 14px; height: 14px; flex: none; }
 .icon { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
