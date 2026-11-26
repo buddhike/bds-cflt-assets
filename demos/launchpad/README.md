@@ -84,7 +84,7 @@ A demo is a directory under the demos path with a `tf` directory:
 
 ```
 demos/<id>/
-  demo.json    optional: {"name": "...", "description": "..."}
+  demo.json    optional: {"name": "...", "description": "...", "tags": ["..."]}
   tf/          Terraform. Must follow the interface below
 ```
 

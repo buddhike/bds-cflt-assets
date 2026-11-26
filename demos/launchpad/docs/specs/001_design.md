@@ -315,8 +315,12 @@ Secrets reach Terraform only as process environment (`TF_VAR_*`, and
 
 ## Demo interface
 
-A demo directory has `tf/` and may have `demo.json` with `name` and
-`description`. Launchpad passes (as `TF_VAR_*`):
+A demo directory has `tf/` and may have `demo.json` with `name`,
+`description` and `tags`. The tags name the Confluent Cloud products the demo
+shows. The dashboard lists them on the demo's card; at most 8 are kept, 40
+characters each, and anything that is not a list of strings is ignored.
+
+Launchpad passes (as `TF_VAR_*`):
 
 | Variable | Type | Required | Value |
 |---|---|---|---|
