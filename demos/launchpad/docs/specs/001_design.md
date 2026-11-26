@@ -15,6 +15,7 @@ segments of the build follow.
 | Credentials store | KMS encrypted blob in DynamoDB. | The overview says DynamoDB for storage. KMS keeps the secret off the page and out of backups in plain text. |
 | Language | Go, on the `provided.al2023` runtime (x86_64), as three programs: `api`, `runner` and `sitedeployer`. | The overview says the functions are written in Python. That was changed on request. One static binary per function starts fast, and the runner needs no interpreter next to Terraform. |
 | Terraform compute | Lambda, container-less. The binary is downloaded to `/tmp`, checksum pinned. A run that hits the Lambda time limit is interrupted and resumed by a new invocation. | The overview says Lambda for compute. Terraform is idempotent, so resuming is safe. |
+| Updating a demo | A running demo is updated in place, with a new `terraform apply` of the commit that is now at the tip of `DemosRepoRef`. It is not torn down first. | Destroying and launching again loses whatever the demo holds that is not in its Terraform, and takes much longer. Terraform's own plan already works out what to change. |
 | Front end hosting | S3 + CloudFront. `/api/*` goes to an HTTP API. | Serverless, one origin, so no CORS. |
 
 ## Architecture
@@ -105,6 +106,7 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 | `POST /api/demos/refresh` | admin | re-read the repository now |
 | `GET /api/demos/{id}` | session | one demo with its log tail |
 | `POST /api/demos/{id}/launch` | session | start `terraform apply` |
+| `POST /api/demos/{id}/update` | launcher or admin | re-read the repository, then start `terraform apply` of the new commit on a running demo |
 | `POST /api/demos/{id}/teardown` | launcher or admin | start `terraform destroy` |
 
 ## Demo lifecycle
@@ -120,9 +122,15 @@ stateDiagram-v2
     launching --> running: apply succeeded
     launching --> launch_failed: apply failed
     launch_failed --> launching: retry launch
+    running --> updating: update
+    updating --> running: apply succeeded
+    updating --> update_failed: apply failed
+    update_failed --> updating: retry update
+    updating --> updating: resume (time limit, up to 8 times)
     launching --> launching: resume (time limit, up to 8 times)
     running --> tearing_down: teardown
     launch_failed --> tearing_down: teardown
+    update_failed --> tearing_down: teardown
     teardown_failed --> tearing_down: retry teardown
     tearing_down --> teardown_failed: destroy failed
     tearing_down --> tearing_down: resume (time limit, up to 8 times)
@@ -135,6 +143,8 @@ stateDiagram-v2
 | `launching` | A runner is applying Terraform | Wait. The page shows the log tail |
 | `running` | Applied. `url` holds `launchpad_url` | Open it, or tear down |
 | `launch_failed` | The apply failed or could not start. `error` says why | Retry the launch, or tear down what was partly created |
+| `updating` | A runner is applying a newer commit to a demo that was running. `url` still holds the old address | Wait. The page shows the log tail |
+| `update_failed` | The apply of the newer commit failed or could not start. `error` says why. The demo is partly updated and may not work | Retry the update, or tear down |
 | `tearing_down` | A runner is destroying | Wait |
 | `teardown_failed` | The destroy failed. Resources may remain | Retry the teardown |
 
@@ -172,11 +182,57 @@ launch call itself never refreshes it. To run a fix just pushed to GitHub, refre
 the catalog and then retry. The `ref` is fixed for the whole run, including its
 resumed slices, so one run never changes version part way through.
 
+### Update
+
+A demo is updated when its code, in `tf/` or beside it, has changed in the
+repository after it was launched. The `STATE` item keeps the `ref` that was
+applied, and the catalog entry has the `ref` that is at the tip of
+`DemosRepoRef`. When the two differ, the page says an update is available. A
+demo that is deployed stays on the commit it was launched or last updated at
+until somebody asks for an update.
+
+1. `POST /api/demos/{id}/update` needs the person who launched the demo, or the
+   admin, as teardown does (otherwise `403`). It answers `404` when the demo is not
+   deployed, and `409 not_updatable` unless it is `running` or `update_failed`.
+2. It first re-reads the repository, as `POST /api/demos/refresh` does, so a
+   commit pushed a moment ago is found without waiting for `CacheSeconds`. If
+   the repository cannot be read the answer is `502 catalog_unavailable` and the
+   demo is untouched. The launch call does not do this, and still uses the
+   cached catalog.
+3. It refuses a demo that no longer follows the interface (`invalid_demo`). It
+   refuses a `running` demo whose `ref` is already the new one (`409
+   up_to_date`), so a click that has nothing to apply does not start a run. An
+   `update_failed` demo can always be retried, even at the same `ref`.
+4. A demo that needs Confluent Cloud, at the old commit or the new one, is
+   applied with the key of the person who launched it, or else the key of the
+   person updating it, and `credentials_required` if neither saved one. A
+   `credsOwner` already recorded is not enough: the key may have been deleted since.
+5. It sets `status=updating` with a fresh `runId`, and copies `ref`, `path` and
+   `needsConfluent` from the new catalog entry. `launchedBy` and `url` are left as
+   they are, and `error` and the log are cleared. The write succeeds only from
+   `running` or `update_failed`, otherwise the answer is `409 not_updatable`.
+6. The runner applies the new commit (see [Runner](#runner)). The outcome is
+   `running` with the `launchpad_url` the demo now prints, or `update_failed`
+   with an error. A failed update keeps the old `url`, since the demo is
+   probably still there. The shutdown hook is **not** called: it is for
+   destroying.
+
+Retrying a failed update is a new update, so it uses the commit at the tip of
+`DemosRepoRef` at that time, which may be newer than the one that failed. As with
+a retry of a failed launch, Terraform state is in S3 and the apply carries on from
+there. A teardown after a failed update destroys with the `ref` of the update,
+the last code that was applied, in whole or in part.
+
+Terraform decides what an update does, so a demo author makes the change safe:
+a change to a resource that cannot be changed in place makes Terraform destroy
+and create it. Check `terraform plan` for such changes before merging a change
+to a demo that people have running.
+
 ### Teardown
 
 1. `POST /api/demos/{id}/teardown` needs the person who launched the demo, or the
-   admin. It is allowed from `running`, `launch_failed` and `teardown_failed`
-   (otherwise `409 not_tearable`).
+   admin. It is allowed from `running`, `launch_failed`, `update_failed` and
+   `teardown_failed` (otherwise `409 not_tearable`).
 2. It sets `status=tearing_down` with a fresh `runId`. The `ref` is **not**
    changed, so the destroy uses the code that was last applied. A demo that needs
    Confluent Cloud is destroyed with the key of the person who launched it, or
@@ -191,10 +247,11 @@ resumed slices, so one run never changes version part way through.
 Transitions are conditional writes, so two clicks cannot start two runs:
 
 * launch: from absent or `launch_failed` to `launching`
-* teardown: from `running`, `launch_failed` or `teardown_failed` to
-  `tearing_down`
-* the runner moves `launching` to `running` or `launch_failed`, and
-  `tearing_down` to absent or `teardown_failed`
+* update: from `running` or `update_failed` to `updating`
+* teardown: from `running`, `launch_failed`, `update_failed` or
+  `teardown_failed` to `tearing_down`
+* the runner moves `launching` to `running` or `launch_failed`, `updating` to
+  `running` or `update_failed`, and `tearing_down` to absent or `teardown_failed`
 
 `runId` is a fresh id per request. A runner whose `runId` no longer matches
 the item exits, so a stale invocation never changes a newer run.
@@ -203,8 +260,9 @@ the item exits, so a stale invocation never changes a newer run.
 
 1. Load the `STATE` item and check `runId`.
 2. Download Terraform (once per container) and verify its SHA-256.
-3. Download the demo source at the `ref` recorded at launch (the commit SHA of
-   `DemosRepoRef` at that time), so teardown uses the code that was applied.
+3. Download the demo source at the `ref` recorded when the run was requested (the
+   commit SHA of `DemosRepoRef` at that time), so teardown uses the code that was
+   applied. A launch, a retry and an update each record a new one.
 4. Check the interface below, write the backend file, `terraform init`.
 5. For a teardown that is not a resumed slice, call the demo's shutdown hook
    if it has one. Then `apply -auto-approve` or `destroy -auto-approve`, with a deadline. At the
@@ -267,7 +325,7 @@ ask again. The token is hidden in the run's log and in the error.
 Both Lambdas emit CloudWatch Embedded Metric Format lines in the `Launchpad`
 namespace (`SignInStarted`, `SignInFailed`, `UserRegistered`,
 `DemoLaunchRequested`, `DemoLaunchSucceeded`, `DemoLaunchFailed`,
-`DemoTeardownRequested`, `TerraformSeconds`). The CloudFormation template
+`DemoUpdateRequested`, `DemoUpdateSucceeded`, `DemoUpdateFailed`, `DemoTeardownRequested`, `TerraformSeconds`). The CloudFormation template
 creates one dashboard with those, plus Lambda, HTTP API, DynamoDB, SNS text messages and
 CloudFront health.
 
