@@ -28,7 +28,7 @@ account. Useful options:
 | `--param SuperUserEmail=you@example.com` | The one person who can sign in. Their address names their saved credentials and demos. The template has a default |
 | `--param DemosRef=launchpad` | The branch demos are read from. Default `main` |
 | `--param DemosPath=launchpad-demos` | The directory whose sub directories are demos. Default `demos` |
-| `--param DemoDeployPolicyArn=arn:...` | Narrow what Terraform may create. Default is `AdministratorAccess` |
+| `--param DemoDeployPolicyArn=arn:...` | Narrow what Terraform may create and change. Default is `AdministratorAccess` |
 
 **The sign-in phone number.** Codes are texted, through SNS, to the number in
 the Secrets Manager secret the stack creates (the `SignInSecretArn` output).
@@ -65,12 +65,15 @@ before running the script.
    **Tear down** deletes everything it created.
 4. To change a demo that is running, push the change to the branch demos are
    read from (`main` unless you set `DemosRef`), then click **Update** on its
-   card. The card says when a newer commit is available. Launchpad re-reads the
-   repository, so the commit you just pushed is the one that is applied. It runs
-   `terraform apply` of the new code over the demo that is running, and does not
-   tear it down first. If the update fails, **Retry update** tries again with the
-   newest commit, and **Tear down** is still there. Only the person who launched
-   a demo, or the admin, can update it.
+   card. The card says when a newer version of that demo is available, and only
+   a change inside the demo's own directory counts, not a push that touches other
+   demos. The repository is read now and then, so right after a push the button
+   may say **Check for update**: pressing it reads the repository, and applies
+   the update if there is one. The update runs `terraform apply` of the new code
+   over the demo that is running, and does not tear it down first. If it fails,
+   **Retry update** tries again with the newest commit, and **Tear down** is still
+   there. Only the person who launched a demo, or the admin, can update it, and a
+   demo that needs Confluent Cloud is updated with the launcher's saved key.
 
 Everything Launchpad creates carries the tag `launchpad:managed=true`.
 Everything a demo creates is also tagged `launchpad:demo=<id>`.

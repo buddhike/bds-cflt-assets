@@ -1,7 +1,7 @@
 # Launchpad design
 
-Implements [001_overview.md](001_overview.md). This is the contract the
-segments of the build follow.
+Implements the original overview, which is no longer in the repository. This is
+the contract the segments of the build follow.
 
 ## Decisions that interpret the overview
 
@@ -146,7 +146,7 @@ stateDiagram-v2
 |---|---|---|
 | absent | Nothing is deployed. The demo is in the catalog only | Launch |
 | `launching` | A runner is applying Terraform | Wait. The page shows the log tail |
-| `running` | Applied. `url` holds `launchpad_url` | Open it, or tear down |
+| `running` | Applied. `url` holds `launchpad_url` | Open it, update it to a newer version, or tear down |
 | `launch_failed` | The apply failed or could not start. `error` says why | Retry the launch, or tear down what was partly created |
 | `updating` | A runner is applying a newer commit to a demo that was running. `url` still holds the old address | Wait. The page shows the log tail |
 | `update_failed` | The apply of the newer commit failed or could not start. `error` says why. The demo is partly updated and may not work | Retry the update, or tear down |

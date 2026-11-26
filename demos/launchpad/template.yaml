@@ -35,7 +35,7 @@ Parameters:
     Type: String
     Default: arn:aws:iam::aws:policy/AdministratorAccess
     Description: >-
-      The managed policy that lets Terraform create what demos need. The default is
+      The managed policy that lets Terraform create and change what demos need. The default is
       broad because demos create IAM roles, networks and load balancers. Replace it
       with a narrower policy if the demos you run allow it.
   FrontendArtifactBucket:
