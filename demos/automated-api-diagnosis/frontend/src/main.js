@@ -1,4 +1,5 @@
 import { mount } from 'svelte'
+import './graphite.css'
 import './style.css'
 import App from './App.svelte'
 
