@@ -69,7 +69,7 @@ DynamoDB Local. That is what keeps `db.Memory` honest.
 | `SESSION#<sha256 token>` | `SESSION` | `email`, `ttl` |
 | `CATALOG` | `DEMO#<id>` | `name`, `description`, `path`, `ref`, `version`, `latest`, `needsConfluent` |
 | `CATALOG` | `META` | `refreshedAt`, `ref` |
-| `DEMO#<id>` | `STATE` | `status`, `runId`, `ref`, `version`, `launchedBy`, `credsOwner`, `url`, `error`, `logTail`, `resumes`, `updatedAt` |
+| `DEMO#<id>` | `STATE` | `status`, `runId`, `ref`, `version`, `prevRef`, `prevVersion`, `prevPath`, `prevNeedsConfluent`, `launchedBy`, `credsOwner`, `url`, `error`, `logTail`, `resumes`, `updatedAt` |
 
 Time to live (`ttl`) is enabled on the table, so OTPs and sessions expire.
 Reads of an expired item must still check `ttl` because deletion is lazy.
@@ -111,8 +111,8 @@ Reads of an expired item must still check `ttl` because deletion is lazy.
 
 Each demo in `GET /api/demos` and `GET /api/demos/{id}` has a `state` that, besides
 the stored fields, says `canUpdate` (the user may update it, as for teardown) and
-`updateAvailable` (the demo is `running`, follows the interface, and its `version`
-is behind the catalog's), which is what the page uses to offer an update.
+`updateAvailable` (the demo is `running` or `update_failed`, follows the
+interface, and its `version` is behind the catalog's), which is what the page uses to offer an update.
 
 ## Demo lifecycle
 
@@ -206,8 +206,8 @@ last updated at until somebody asks for an update.
    deployed, and `409 not_updatable` unless it is `running` or `update_failed`.
 2. It first re-reads the repository, as `POST /api/demos/refresh` does, so a
    commit pushed a moment ago is found without waiting for `CacheSeconds`. If
-   the repository cannot be read the answer is `502 catalog_unavailable` and the
-   demo is untouched. The launch call does not do this, and still uses the
+   the repository cannot be read the answer is GitHub's own failure (`502`, with its
+   message) and the demo is untouched. The launch call does not do this, and still uses the
    cached catalog.
 3. It refuses a demo that is no longer in the repository (`409 demo_removed`:
    tear it down) and one that no longer follows the interface (`invalid_demo`). It
@@ -230,16 +230,35 @@ last updated at until somebody asks for an update.
    they are, and `error` and the log are cleared. The write succeeds only from
    `running` or `update_failed`, otherwise the answer is `409 not_updatable`.
 6. The runner applies the new commit (see [Runner](#runner)). The outcome is
-   `running` with the `launchpad_url` the demo now prints, or `update_failed`
-   with an error. A failed update keeps the old `url`, since the demo is
-   probably still there. The shutdown hook is **not** called: it is for
-   destroying.
+   `running` with the `launchpad_url` the demo now prints (the old address stays
+   if it prints none), or `update_failed` with an error. A failed update keeps
+   the old `url`, since the demo is probably still there. The shutdown hook is
+   **not** called: it is for destroying.
+
+The request also stores the code the demo was at (`prevRef`, `prevVersion`,
+`prevPath`, `prevNeedsConfluent`). An update that fails **before** Terraform
+applies anything, because the runner could not start, the commit does not
+download, does not follow the interface or fails `terraform init`, puts the state
+back at that code. Nothing was changed, so the demo is still what it was, and
+the commit that broke the update does not become the code a teardown tries
+to use. `update_failed` with the old `ref` and a `ref` in the catalog that is
+newer says an update is available. A failure after the apply has begun, in this
+slice or an earlier one, leaves the new `ref`, because Terraform may have changed
+some of it.
 
 Retrying a failed update is a new update, so it uses the commit at the tip of
 `DemosRepoRef` at that time, which may be newer than the one that failed. As with
 a retry of a failed launch, Terraform state is in S3 and the apply carries on from
-there. A teardown after a failed update destroys with the `ref` of the update,
-the last code that was applied, in whole or in part.
+there. A teardown after an update that failed while applying destroys with the
+`ref` of that update, the last code that was applied, in whole or in part. A
+broken commit that fails only once Terraform has begun (a plan error, for
+example) can therefore stop a teardown too: push a fix and update, then tear down.
+
+Two things are accepted as they are, because Launchpad has one signed-in owner.
+The request names no commit, so it applies whatever is at the tip of
+`DemosRepoRef` when it is handled, which is the branch's own review rule to
+control, as for a launch. And any launcher's update forces the repository to be
+re-read, as an admin's refresh does, at a cost of a few GitHub calls.
 
 Terraform decides what an update does, so a demo author makes the change safe:
 a change to a resource that cannot be changed in place makes Terraform destroy
