@@ -35,57 +35,58 @@
   $: statusCounts = stats?.statusCounts ?? {}
 </script>
 
-<div class="tile" class:error={config.gatewayError}>
-  <div class="tile-header">
-    <h3>{config.name}</h3>
-    <button class="reset" on:click={() => dispatch('reset')} title="Reset this API to its defaults">Reset</button>
+<div class="card" class:is-error={config.gatewayError}>
+  <div class="card-head">
+    <h3 class="mono">{config.name}</h3>
+    <button class="quiet sm" on:click={() => dispatch('reset')} title="Reset this API to its defaults">Reset</button>
   </div>
-  <p class="path">{config.path}</p>
+  <p class="mono small faint path">{config.path}</p>
+  {#if config.gatewayError}<div><span class="pill danger">Gateway error</span></div>{/if}
 
-  <div class="stats">
-    <span class="rate">{(stats?.eventsPerSec ?? 0).toFixed(1)} evt/s</span>
-    <span class="duration">{stats?.lastDurationMs ?? '-'} ms</span>
+  <div class="stats mono">
+    <span class="num">{(stats?.eventsPerSec ?? 0).toFixed(1)} evt/s</span>
+    <span class="num">{stats?.lastDurationMs ?? '-'} ms</span>
   </div>
-  <div class="status-counts">
+  <div class="codes">
     {#each ['200', '403', '404', '500', '502'] as code}
       {#if statusCounts[code]}
-        <span class="status-badge status-{code}">{code}: {statusCounts[code]}</span>
+        <span class="pill num" class:warn={code === '403' || code === '404'} class:danger={code === '500' || code === '502'}>{code}: {statusCounts[code]}</span>
       {/if}
     {/each}
   </div>
 
-  <label>
-    Rate ({config.rate.toFixed(1)}/s)
-    <input type="range" min="0" max="20" step="0.5" bind:value={config.rate} on:input={emitChange} />
-  </label>
-  <label>
-    Latency ({config.latencyMs}ms)
-    <input type="range" min="1" max="1000" step="1" bind:value={config.latencyMs} on:input={emitChange} />
-  </label>
-  <label>
-    500s ({config.pct500}%)
-    <input type="range" min="0" max="100" step="1" bind:value={config.pct500} on:input={emitChange} />
-  </label>
-  <label>
-    403s ({config.pct403}%)
-    <input type="range" min="0" max="100" step="1" bind:value={config.pct403} on:input={emitChange} />
-  </label>
-  <label>
-    404s ({config.pct404}%)
-    <input type="range" min="0" max="100" step="1" bind:value={config.pct404} on:input={emitChange} />
-  </label>
+  <div class="field">
+    <label for="{config.name}-rate">Rate (<span class="num">{config.rate.toFixed(1)}</span>/s)</label>
+    <input id="{config.name}-rate" type="range" min="0" max="20" step="0.5" bind:value={config.rate} on:input={emitChange} />
+  </div>
+  <div class="field">
+    <label for="{config.name}-latency">Latency (<span class="num">{config.latencyMs}</span> ms)</label>
+    <input id="{config.name}-latency" type="range" min="1" max="1000" step="1" bind:value={config.latencyMs} on:input={emitChange} />
+  </div>
+  <div class="field">
+    <label for="{config.name}-500">500s (<span class="num">{config.pct500}</span>%)</label>
+    <input id="{config.name}-500" type="range" min="0" max="100" step="1" bind:value={config.pct500} on:input={emitChange} />
+  </div>
+  <div class="field">
+    <label for="{config.name}-403">403s (<span class="num">{config.pct403}</span>%)</label>
+    <input id="{config.name}-403" type="range" min="0" max="100" step="1" bind:value={config.pct403} on:input={emitChange} />
+  </div>
+  <div class="field">
+    <label for="{config.name}-404">404s (<span class="num">{config.pct404}</span>%)</label>
+    <input id="{config.name}-404" type="range" min="0" max="100" step="1" bind:value={config.pct404} on:input={emitChange} />
+  </div>
 
-  <label class="toggle">
+  <label class="check small">
     <input type="checkbox" bind:checked={config.gatewayError} on:change={emitChange} />
     Gateway error (upstream unreachable)
   </label>
 
   {#if otherNames.length > 0}
-    <details class="deps">
+    <details class="deps small">
       <summary>Depends on ({(config.dependsOn ?? []).length})</summary>
       <div class="dep-list">
         {#each otherNames as name}
-          <label class="dep-item">
+          <label class="check">
             <input
               type="checkbox"
               checked={(config.dependsOn ?? []).includes(name)}
@@ -100,119 +101,52 @@
 </div>
 
 <style>
-  .tile {
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    padding: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .tile.error {
-    border-color: #ff5c5c;
-  }
-
-  .tile-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
+  .card {
     gap: 0.5rem;
   }
 
-  h3 {
-    margin: 0;
-    font-size: 0.85rem;
-    word-break: break-word;
-  }
-
-  .reset {
-    flex-shrink: 0;
-    font-size: 0.68rem;
-    padding: 0.15rem 0.4rem;
-    border-radius: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    opacity: 0.75;
-  }
-
-  .reset:hover {
-    opacity: 1;
+  .card.is-error {
+    border-color: var(--danger);
   }
 
   .path {
     margin: 0;
-    font-size: 0.75rem;
-    opacity: 0.6;
-    font-family: monospace;
   }
 
   .stats {
     display: flex;
     justify-content: space-between;
-    font-family: monospace;
-    font-size: 0.85rem;
   }
 
-  .status-counts {
+  .codes {
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem;
-    min-height: 1.2rem;
+    min-height: 1.5rem;
   }
 
-  .status-badge {
-    font-size: 0.7rem;
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.1);
-  }
-
-  .status-badge.status-500,
-  .status-badge.status-502 {
-    background: rgba(255, 92, 92, 0.3);
-  }
-
-  .status-badge.status-403,
-  .status-badge.status-404 {
-    background: rgba(255, 200, 80, 0.3);
-  }
-
-  label {
-    display: flex;
-    flex-direction: column;
-    font-size: 0.75rem;
+  .field {
     gap: 0.15rem;
   }
 
-  label.toggle {
-    flex-direction: row;
+  .check {
+    display: flex;
     align-items: center;
     gap: 0.4rem;
+    font-size: var(--fs-small);
   }
 
   .deps summary {
-    font-size: 0.75rem;
     cursor: pointer;
-    opacity: 0.8;
+    color: var(--text-2);
   }
 
   .dep-list {
     display: flex;
     flex-direction: column;
-    gap: 0.2rem;
+    gap: 0.25rem;
     margin-top: 0.4rem;
-    max-height: 120px;
+    max-height: 7.5rem;
     overflow-y: auto;
-  }
-
-  .dep-item {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.72rem;
   }
 </style>

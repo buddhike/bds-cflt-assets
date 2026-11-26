@@ -2,6 +2,7 @@
   import Dashboard from './Dashboard.svelte'
   import Monitor from './Monitor.svelte'
   import Reports from './Reports.svelte'
+  import Logo from './Logo.svelte'
 
   export let summary
   export let aiReports = true
@@ -10,10 +11,13 @@
 </script>
 
 <div class="shell">
-  <nav>
-    <button class:active={tab === 'simulator'} on:click={() => (tab = 'simulator')}>Simulator</button>
-    <button class:active={tab === 'reports'} on:click={() => (tab = 'reports')}>AI Reports</button>
-  </nav>
+  <header class="topbar">
+    <h1 class="brand"><Logo />Launchpad <span class="sep">/</span> Automated API diagnosis</h1>
+    <nav class="tabs" aria-label="Views">
+      <button class="tab" aria-current={tab === 'simulator' ? 'page' : undefined} on:click={() => (tab = 'simulator')}>Simulator</button>
+      <button class="tab" aria-current={tab === 'reports' ? 'page' : undefined} on:click={() => (tab = 'reports')}>AI reports</button>
+    </nav>
+  </header>
 
   <!-- Both tabs stay mounted (inactive one is just hidden) so the report
        list keeps accumulating while the simulator tab is in front. -->
@@ -40,33 +44,9 @@
     height: 100%;
   }
 
-  nav {
-    display: flex;
-    gap: 0.25rem;
-    padding: 0.4rem 0.8rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-  }
-
-  nav button {
-    padding: 0.45rem 1rem;
-    border: none;
-    border-bottom: 2px solid transparent;
-    background: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    opacity: 0.6;
-    cursor: pointer;
-  }
-
-  nav button:hover {
-    opacity: 0.9;
-  }
-
-  nav button.active {
-    opacity: 1;
-    border-bottom-color: #4a9eff;
+  .shell > .topbar {
+    flex: none;
+    position: static;
   }
 
   .content {
@@ -93,9 +73,10 @@
   }
 
   .monitor {
-    width: 260px;
+    width: 17rem;
     flex-shrink: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
   }
 
   /* Must stay below .split/.reports-view: equal specificity, so the later

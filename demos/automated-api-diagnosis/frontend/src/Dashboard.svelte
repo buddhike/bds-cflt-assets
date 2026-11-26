@@ -12,6 +12,7 @@
     OnReconnect,
   } from './api.js'
   import ApiTile from './ApiTile.svelte'
+  import Notice from './Notice.svelte'
 
   export let summary
 
@@ -102,21 +103,22 @@
 </script>
 
 <main>
-  <header>
+  <div class="page-head">
     <div>
-      <h1>{summary.clusterName}</h1>
-      <p class="subtitle">{summary.provider}/{summary.region} · topic {summary.topicName}</p>
+      <h2>{summary.clusterName}</h2>
+      <p class="subtitle mono faint">{summary.provider}/{summary.region} · topic {summary.topicName}</p>
     </div>
-    <div class="actions">
-      <button on:click={toggleSimulation}>{simRunning ? 'Stop' : 'Start'} simulation</button>
+    <div class="row">
+      <span class="pill" class:ok={simRunning}>{simRunning ? 'Simulation running' : 'Simulation stopped'}</span>
+      <button class:primary={!simRunning} on:click={toggleSimulation}>{simRunning ? 'Stop' : 'Start'} simulation</button>
       <button on:click={resetAll}>Reset all to defaults</button>
     </div>
-  </header>
+  </div>
 
   {#if simError}
-    <div class="error">{simError}</div>
+    <div class="notice-row"><Notice tone="danger" alert>{simError}</Notice></div>
   {/if}
-  <div class="grid">
+  <div class="cards">
     {#each apis as api (api.name)}
       <ApiTile
         config={api}
@@ -132,58 +134,18 @@
   main {
     max-width: 1400px;
     margin: 0 auto;
-    padding: 1.5rem;
-  }
-
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 1rem;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: 1.2rem;
+    padding: 1rem 1.25rem 2rem;
   }
 
   .subtitle {
     margin: 0.2rem 0 0;
-    font-size: 0.8rem;
-    opacity: 0.7;
-    font-family: monospace;
   }
 
-  .error {
-    color: #ff6b6b;
-    font-size: 0.9rem;
+  .notice-row {
     margin-bottom: 1rem;
   }
 
-  .actions {
-    display: flex;
-    gap: 0.75rem;
+  .cards {
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
   }
-
-  .actions button {
-    padding: 0.6rem 1rem;
-    border-radius: 4px;
-    border: none;
-    cursor: pointer;
-    font-weight: 600;
-  }
-
-  .actions button {
-    background: #4a9eff;
-    color: white;
-  }
-
-
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 1rem;
-  }
-
-
 </style>

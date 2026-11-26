@@ -8,6 +8,7 @@
     OnReconnect,
   } from './api.js'
   import HealthTile from './HealthTile.svelte'
+  import Notice from './Notice.svelte'
 
   const GROUP_DEBOUNCE_MS = 300
 
@@ -119,10 +120,10 @@
 </script>
 
 <main>
-  <h2>Service health</h2>
+  <h2 class="label">Service health</h2>
 
   {#if monitorError}
-    <div class="error">{monitorError}</div>
+    <div class="notice-row"><Notice tone="danger" alert>{monitorError}</Notice></div>
   {/if}
 
   <div class="stack">
@@ -134,28 +135,19 @@
 
 <style>
   main {
-    padding: 0.6rem;
-    height: 100%;
+    padding: 0.75rem;
     box-sizing: border-box;
   }
 
   h2 {
-    margin: 0 0 0.5rem;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.7;
+    margin: 0 0 0.6rem;
   }
 
-  .error {
-    color: #ff6b6b;
-    font-size: 0.8rem;
-    margin-bottom: 0.5rem;
+  .notice-row {
+    margin-bottom: 0.6rem;
   }
 
   .stack {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.4rem;
   }
 </style>

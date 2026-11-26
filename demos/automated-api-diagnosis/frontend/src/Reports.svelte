@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { marked } from 'marked'
   import DOMPurify from 'dompurify'
+  import Notice from './Notice.svelte'
   import { GetReportBacklog, OpenURL, EventsOn, OnReconnect } from './api.js'
 
   // Whether Terraform deployed an AI agent to write the reports.
@@ -54,14 +55,15 @@
     return new Date(ms).toLocaleString()
   }
 
-  function statusClass(code) {
-    if (code === '500' || code === '502' || code === '503' || code === '504') return 'server-error'
-    if (code === '403' || code === '404') return 'client-error'
+  // The tone of a pill: failures red, client errors amber, anything else neutral.
+  function statusTone(code) {
+    if (code === '500' || code === '502' || code === '503' || code === '504') return 'danger'
+    if (code === '403' || code === '404') return 'warn'
     return ''
   }
 
-  function agentClass(status) {
-    return /fail|error/i.test(status) ? 'agent-failed' : ''
+  function agentTone(status) {
+    return /fail|error/i.test(status) ? 'danger' : ''
   }
 
   function renderMarkdown(md) {
@@ -88,21 +90,19 @@
 
 <div class="reports" class:split={selected}>
   <section class="list-pane">
-    <h2>AI anomaly reports</h2>
+    <h2 class="label">AI anomaly reports</h2>
 
     {#if monitorError}
-      <div class="error">
-        {monitorError}
-      </div>
+      <div class="notice-row"><Notice tone="danger" alert>{monitorError}</Notice></div>
     {/if}
 
     {#if reports.length === 0 && !aiReports}
-      <p class="empty">
+      <p class="muted small">
         No AI agent was deployed with this demo, so nothing writes to <code>api_anomaly_ai_reports</code>.
         Add the agent's statements under <code>tf/ai</code> (see its README) and launch the demo again.
       </p>
     {:else if reports.length === 0}
-      <p class="empty">Waiting for reports on <code>api_anomaly_ai_reports</code>…</p>
+      <p class="muted small">Waiting for reports on <code>api_anomaly_ai_reports</code>…</p>
     {:else}
       <ul>
         {#each reports as r (r.id)}
@@ -110,16 +110,16 @@
             <button
               type="button"
               class="item"
-              class:active={selected?.id === r.id}
+              aria-current={selected?.id === r.id ? 'true' : undefined}
               on:click={() => (selected = r)}
             >
-              <span class="api">{r.api_id}</span>
+              <span class="api mono">{r.api_id}</span>
               <div class="item-bottom">
-                <div class="item-badges">
-                  <span class="badge status {statusClass(r.http_status)}">{r.http_status}</span>
-                  <span class="badge agent {agentClass(r.agent_status)}">{r.agent_status}</span>
+                <div class="badges">
+                  <span class="pill num {statusTone(r.http_status)}">{r.http_status}</span>
+                  <span class="pill {agentTone(r.agent_status)}">{r.agent_status}</span>
                 </div>
-                <span class="time">{formatTime(r.detected_at)}</span>
+                <span class="time mono faint">{formatTime(r.detected_at)}</span>
               </div>
             </button>
           </li>
@@ -132,21 +132,21 @@
     <section class="detail-pane">
       <header>
         <div>
-          <h3>{selected.api_id}</h3>
-          <div class="meta">
-            <span class="badge status {statusClass(selected.http_status)}">{selected.http_status}</span>
-            <span class="badge agent {agentClass(selected.agent_status)}">{selected.agent_status}</span>
-            <span class="time">{formatTime(selected.detected_at)}</span>
+          <h3 class="mono">{selected.api_id}</h3>
+          <div class="badges">
+            <span class="pill num {statusTone(selected.http_status)}">{selected.http_status}</span>
+            <span class="pill {agentTone(selected.agent_status)}">{selected.agent_status}</span>
+            <span class="time mono faint">{formatTime(selected.detected_at)}</span>
           </div>
         </div>
-        <button type="button" class="close" title="Close (Esc)" on:click={() => (selected = null)}>×</button>
+        <button type="button" class="quiet sm" aria-label="Close report" title="Close (Esc)" on:click={() => (selected = null)}>×</button>
       </header>
 
       {#if rendered}
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
         <div class="markdown" on:click={openLinksExternally}>{@html rendered}</div>
       {:else}
-        <p class="empty">This report has no content.</p>
+        <p class="muted small">This report has no content.</p>
       {/if}
     </section>
   {/if}
@@ -156,7 +156,6 @@
   .reports {
     display: flex;
     height: 100%;
-    text-align: left;
   }
 
   .list-pane {
@@ -168,8 +167,9 @@
   }
 
   .reports.split .list-pane {
-    flex: 0 0 340px;
-    border-right: 1px solid rgba(255, 255, 255, 0.15);
+    flex: 0 0 21rem;
+    border-right: 1px solid var(--border);
+    background: var(--surface);
   }
 
   .detail-pane {
@@ -180,30 +180,12 @@
     box-sizing: border-box;
   }
 
-  h2 {
+  .list-pane h2 {
     margin: 0 0 0.6rem;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.7;
   }
 
-  .error {
-    color: #ff6b6b;
-    font-size: 0.8rem;
+  .notice-row {
     margin-bottom: 0.6rem;
-    word-break: break-word;
-  }
-
-  .hint {
-    margin-top: 0.3rem;
-    opacity: 0.75;
-    color: white;
-  }
-
-  .empty {
-    opacity: 0.6;
-    font-size: 0.9rem;
   }
 
   ul {
@@ -212,31 +194,26 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.4rem;
   }
 
   .item {
     width: 100%;
+    height: auto;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 0.35rem;
     padding: 0.55rem 0.7rem;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.03);
-    color: inherit;
-    font: inherit;
+    font-weight: 400;
     text-align: left;
-    cursor: pointer;
+    white-space: normal;
   }
 
-  .item:hover {
-    background: rgba(255, 255, 255, 0.07);
-  }
-
-  .item.active {
-    border-color: #4a9eff;
-    background: rgba(74, 158, 255, 0.12);
+  .item[aria-current='true'] {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   }
 
   .item-bottom {
@@ -247,55 +224,20 @@
   }
 
   .api {
-    font-size: 0.8rem;
-    font-weight: 700;
+    font-weight: 600;
     word-break: break-word;
   }
 
   .time {
     flex-shrink: 0;
-    font-size: 0.7rem;
-    opacity: 0.65;
-    font-family: monospace;
+    font-size: var(--fs-small);
   }
 
-  .item-badges,
-  .meta {
+  .badges {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.3rem;
-  }
-
-  .badge {
-    font-size: 0.65rem;
-    font-weight: 700;
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.12);
-    white-space: nowrap;
-  }
-
-  .badge.agent {
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
-    background: rgba(74, 158, 255, 0.2);
-    color: #9ccaff;
-  }
-
-  .badge.status.server-error {
-    background: rgba(255, 92, 92, 0.3);
-    color: #ff9a9a;
-  }
-
-  .badge.status.client-error {
-    background: rgba(255, 200, 80, 0.3);
-    color: #ffd98a;
-  }
-
-  .badge.agent.agent-failed {
-    background: rgba(255, 92, 92, 0.3);
-    color: #ff9a9a;
   }
 
   header {
@@ -305,35 +247,17 @@
     gap: 1rem;
     padding-bottom: 0.7rem;
     margin-bottom: 0.8rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    border-bottom: 1px solid var(--border);
   }
 
   h3 {
     margin: 0 0 0.35rem;
-    font-size: 1.05rem;
+    font-size: var(--fs-h2);
     word-break: break-word;
-  }
-
-  .close {
-    flex-shrink: 0;
-    width: 1.8rem;
-    height: 1.8rem;
-    border: none;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.1);
-    color: inherit;
-    font-size: 1.2rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .close:hover {
-    background: rgba(255, 255, 255, 0.2);
   }
 
   /* {@html} output isn't touched by Svelte's scoped styles, hence :global. */
   .markdown {
-    font-size: 0.9rem;
     line-height: 1.55;
     overflow-wrap: anywhere;
   }
@@ -351,20 +275,18 @@
   }
 
   .markdown :global(h1) {
-    font-size: 1.35rem;
+    font-size: var(--fs-h1);
   }
 
   .markdown :global(h2) {
-    font-size: 1.15rem;
-    text-transform: none;
-    letter-spacing: normal;
-    opacity: 1;
+    font-size: var(--fs-h2);
     padding-bottom: 0.25em;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    border-bottom: 1px solid var(--border);
   }
 
-  .markdown :global(h3) {
-    font-size: 1rem;
+  .markdown :global(h3),
+  .markdown :global(h4) {
+    font-size: var(--fs-h3);
   }
 
   .markdown :global(p),
@@ -385,40 +307,23 @@
     margin: 0.2em 0;
   }
 
-  .markdown :global(a) {
-    color: #7bb8ff;
-  }
-
-  .markdown :global(code) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85em;
-    padding: 0.1em 0.35em;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.1);
-  }
-
   .markdown :global(pre) {
     padding: 0.7rem 0.9rem;
-    border-radius: 6px;
-    background: rgba(0, 0, 0, 0.3);
+    border-radius: var(--r-md);
+    color: var(--code-text);
+    background: var(--code-bg);
+    border: 1px solid var(--border);
     overflow-x: auto;
   }
 
   .markdown :global(pre code) {
-    padding: 0;
-    background: none;
+    color: inherit;
   }
 
   .markdown :global(blockquote) {
     padding: 0.1em 0.9em;
-    border-left: 3px solid rgba(255, 255, 255, 0.25);
-    opacity: 0.85;
-  }
-
-  .markdown :global(hr) {
-    border: none;
-    border-top: 1px solid rgba(255, 255, 255, 0.15);
-    margin: 1.2em 0;
+    border-left: 3px solid var(--border-strong);
+    color: var(--text-2);
   }
 
   .markdown :global(table) {
@@ -429,12 +334,17 @@
 
   .markdown :global(th),
   .markdown :global(td) {
-    padding: 0.35rem 0.7rem;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    padding: 0.35em 0.7em;
+    border: 1px solid var(--border);
     text-align: left;
   }
 
   .markdown :global(th) {
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--surface-2);
+  }
+
+  .markdown :global(hr) {
+    border: 0;
+    border-top: 1px solid var(--border);
   }
 </style>
