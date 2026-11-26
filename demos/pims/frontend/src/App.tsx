@@ -6,6 +6,7 @@ import {QueryPanel} from './components/QueryPanel';
 import {SidePanel, SideSection} from './components/SidePanel';
 import {StatusBar} from './components/StatusBar';
 import {Logo} from './components/Logo';
+import {Notice} from './components/Notice';
 import {events} from './api';
 
 const MAX_LOGS = 500;
@@ -52,7 +53,7 @@ export default function App() {
     }
   }
 
-  if (!state) return <main className="gate"><p>Loading…</p></main>;
+  if (!state) return <main><div className="gate"><p className="muted">Loading…</p></div></main>;
   if (!state.hasCredentials) return <CredentialsForm onSaved={refresh}/>;
 
   const busy = state.busy;
@@ -68,39 +69,31 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">
-          <Logo className="brand-mark"/>
-          <div className="brand-text">
-            <h1>Patient Information Management System</h1>
-            <span
-              className="sub"
-              title="Streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud Tableflow, and showing how fresh they are"
-            >
-              Streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud
-              Tableflow, and showing how fresh they are
-            </span>
-          </div>
-        </div>
-        <div className="actions">
-          {busy && <span className="pill pill-on">● {busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
+        <h1
+          className="brand"
+          title="Patient Information Management System: streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud Tableflow, and showing how fresh they are"
+        >
+          <Logo/>
+          {managed && <>Launchpad <span className="sep">/</span></>} PIMS
+        </h1>
+        {busy && <span className="pill busy">{busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
+        <span className="spacer"/>
+        <div className="who">
           {managed ? (
-            <>
-              {!busy && setupFailed && <button className="primary" onClick={() => run(api.setup)}>Retry setup</button>}
-              <span className="pill" title="Launchpad deployed this demo and tears it down">Managed by Launchpad</span>
-            </>
+            !busy && setupFailed && <button className="primary sm" onClick={() => run(api.setup)}>Retry setup</button>
           ) : (
             <>
-              <button className="primary" disabled={!!busy} onClick={() => run(api.setup)}>
+              <button className="primary sm" disabled={!!busy} onClick={() => run(api.setup)}>
                 {stepsStarted ? 'Re-run setup' : 'Set up demo'}
               </button>
               {confirmTeardown ? (
                 <span className="confirm">
                   Delete all cloud and local resources?
-                  <button className="danger" onClick={() => { setConfirmTeardown(false); run(api.teardown); }}>Delete everything</button>
-                  <button onClick={() => setConfirmTeardown(false)}>Cancel</button>
+                  <button className="danger sm" onClick={() => { setConfirmTeardown(false); run(api.teardown); }}>Delete everything</button>
+                  <button className="sm" onClick={() => setConfirmTeardown(false)}>Cancel</button>
                 </span>
               ) : (
-                <button disabled={!!busy} onClick={() => setConfirmTeardown(true)}>Tear down</button>
+                <button className="quiet sm" disabled={!!busy} onClick={() => setConfirmTeardown(true)}>Tear down</button>
               )}
             </>
           )}
@@ -109,7 +102,7 @@ export default function App() {
 
       <SimulationBar sim={state.sim} limits={state.limits} ready={schemaReady}/>
 
-      {(actionError || state.lastError) && <p className="banner error" role="alert">{actionError || state.lastError}</p>}
+      {(actionError || state.lastError) && <div className="banner"><Notice tone="danger" alert>{actionError || state.lastError}</Notice></div>}
 
       <div className="workspace">
         <SidePanel

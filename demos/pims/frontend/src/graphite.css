@@ -277,6 +277,7 @@ pre code { padding: 0; background: none; }
   text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px;
 }
 :is(button, .button).link:hover:not(:disabled) { background: none; text-decoration-color: currentColor; }
+:is(button, .button)[aria-pressed="true"] { color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border-color: var(--accent); }
 :is(button, .button).sm { height: calc(var(--ctl-h) - 6px); padding: 0 10px; font-size: var(--fs-small); }
 button svg, .button svg { width: 14px; height: 14px; flex: none; }
 .icon { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -346,16 +347,19 @@ button svg, .button svg { width: 14px; height: 14px; flex: none; }
 .cards > .card:hover { border-color: var(--border-strong); }
 .cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr)); }
 .card-head { display: flex; align-items: center; gap: .75rem; }
-.card-head h3 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+/* Heading level is for the outline; the look is the same whichever level a title is. */
+.card-head > :is(h2, h3), .panel-head > :is(h2, h3) { margin: 0; font-size: var(--fs-h3); }
+.card-head > :is(h2, h3) { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .card .actions { margin-top: auto; padding-top: .35rem; }
 .card p { margin: 0; }
 .panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .9rem; margin-bottom: .6rem; }
-.panel-head h3 { margin: 0 auto 0 0; }
+.panel-head > :is(h2, h3) { margin-right: auto; }
 .tile {
   flex: none; display: grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: var(--r-sm);
   font: 600 1rem/1 var(--mono); text-transform: uppercase;
   color: var(--text); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border-strong);
 }
+.spacer { flex: 1; }
 .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .confirm { display: inline-flex; flex-wrap: wrap; gap: .5rem .75rem; align-items: center; font-size: var(--fs-small); }
 
@@ -366,7 +370,7 @@ button svg, .button svg { width: 14px; height: 14px; flex: none; }
   min-height: 3rem; padding: 0 1.1rem;
   background: var(--surface); border-bottom: 1px solid var(--border);
 }
-.brand { display: inline-flex; align-items: center; gap: .6rem; font-weight: var(--w-head); font-size: var(--fs-h3); letter-spacing: var(--ls-head); color: var(--text); text-decoration: none; }
+.brand { margin: 0; display: inline-flex; align-items: center; gap: .6rem; font-weight: var(--w-head); font-size: var(--fs-h3); letter-spacing: var(--ls-head); color: var(--text); text-decoration: none; }
 .brand .sep { color: var(--text-3); font-weight: 400; }
 .logo { width: 26px; height: 26px; flex: none; }
 .logo rect { fill: var(--accent); }
@@ -438,7 +442,9 @@ table.data .r { text-align: right; font-variant-numeric: tabular-nums; }
 .rail button svg { width: 18px; height: 18px; }
 .rail button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text); }
 .rail button[aria-current="true"], .rail button.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-ink); }
+
 .badge-count { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; color: var(--on-danger); background: var(--danger); }
+.badge-count.warn { background: var(--warn); color: var(--bg); }
 
 /* ---- code and logs: dark or light by theme, always from the code tokens ---- */
 .log, .code {

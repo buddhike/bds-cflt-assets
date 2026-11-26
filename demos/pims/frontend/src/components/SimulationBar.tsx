@@ -66,7 +66,7 @@ export function SimulationBar({sim, limits, ready}: {sim: SimStats; limits: AppS
     <section className="simbar" aria-label="Simulation">
       <div className="simbar-row">
         <h2>Simulation</h2>
-        <span className={`pill ${sim.running ? 'pill-on' : ''}`}>{sim.running ? '● Running' : 'Stopped'}</span>
+        <span className={`pill ${sim.running ? 'ok' : ''}`}>{sim.running ? 'Running' : 'Stopped'}</span>
 
         <div className="rate">
           <label htmlFor="rate">Events per second</label>
@@ -98,10 +98,10 @@ export function SimulationBar({sim, limits, ready}: {sim: SimStats; limits: AppS
         </div>
 
         {sim.running
-          ? <button onClick={() => call(api.stopSimulation)}>Stop</button>
-          : <button className="primary" disabled={!ready} onClick={() => call(() => api.startSimulation(rate))}>Start</button>}
+          ? <button className="sm" onClick={() => call(api.stopSimulation)}>Stop</button>
+          : <button className="primary sm" disabled={!ready} onClick={() => call(() => api.startSimulation(rate))}>Start</button>}
 
-        {!ready && <span className="fine simbar-hint">Available once setup has installed the schema.</span>}
+        {!ready && <span className="small faint">Available once setup has installed the schema.</span>}
 
         {showStats && (
           <>
@@ -127,8 +127,8 @@ export function SimulationBar({sim, limits, ready}: {sim: SimStats; limits: AppS
           ))}
         </dl>
       )}
-      {error && <p className="error" role="alert">{error}</p>}
-      {sim.lastError && <p className="error">Last error: {sim.lastError}</p>}
+      {error && <p className="small text-danger" role="alert">{error}</p>}
+      {sim.lastError && <p className="small text-danger">Last error: {sim.lastError}</p>}
     </section>
   );
 }

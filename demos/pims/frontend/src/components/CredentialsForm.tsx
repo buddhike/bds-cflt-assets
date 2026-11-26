@@ -1,6 +1,7 @@
 import {FormEvent, useEffect, useState} from 'react';
 import {api, errorText} from '../api';
 import {Logo} from './Logo';
+import {Notice} from './Notice';
 
 // Regions where Confluent Cloud offers Standard clusters and Tableflow.
 // Any valid region code can still be typed in.
@@ -37,48 +38,37 @@ export function CredentialsForm({onSaved}: {onSaved: () => void}) {
   }
 
   return (
-    <main className="gate">
-      <form className="card gate-card" onSubmit={submit}>
-        <div className="brand">
-          <Logo className="brand-mark"/>
-          <h1>PIMS</h1>
-        </div>
-        <p className="lede">
+    <main>
+      <form className="gate stack" onSubmit={submit}>
+        <h1 className="brand"><Logo/>PIMS</h1>
+        <p className="muted">
           Patient Information Management System: a demo of Debezium CDC from MySQL into Confluent Cloud Tableflow
           Iceberg tables, with Tableflow's freshness metrics charted live.
         </p>
 
-        <p className="notice" role="note">
-          <svg className="notice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-               strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>
-            <path d="M12 9v4M12 17h.01"/>
-          </svg>
-          <span>
-            <strong>Don't use credentials that can reach production.</strong> PIMS creates and deletes Confluent
-            Cloud resources. Use an API key for a dedicated demo or sandbox organisation.
-          </span>
-        </p>
+        <Notice tone="warn" title="Don't use credentials that can reach production.">
+          PIMS creates and deletes Confluent Cloud resources. Use an API key for a dedicated demo or sandbox organisation.
+        </Notice>
 
-        <label>
-          AWS region
-          <input list="regions" value={region} onChange={(e) => setRegion(e.target.value)} required spellCheck={false}/>
+        <div className="field">
+          <label htmlFor="region">AWS region</label>
+          <input id="region" list="regions" value={region} onChange={(e) => setRegion(e.target.value)} required spellCheck={false}/>
           <datalist id="regions">{REGIONS.map((r) => <option key={r} value={r}/>)}</datalist>
-        </label>
-        <label>
-          Confluent Cloud API key
-          <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} required autoComplete="off" spellCheck={false}/>
-        </label>
-        <label>
-          Confluent Cloud API secret
-          <input type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} required autoComplete="off"/>
-        </label>
+        </div>
+        <div className="field">
+          <label htmlFor="api-key">Confluent Cloud API key</label>
+          <input id="api-key" className="mono" value={apiKey} onChange={(e) => setApiKey(e.target.value)} required autoComplete="off" spellCheck={false}/>
+        </div>
+        <div className="field">
+          <label htmlFor="api-secret">Confluent Cloud API secret</label>
+          <input id="api-secret" className="mono" type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} required autoComplete="off"/>
+        </div>
 
-        {error && <p className="error" role="alert">{error}</p>}
+        {error && <Notice tone="danger" alert>{error}</Notice>}
 
-        <button type="submit" className="primary" disabled={saving}>{saving ? 'Checking…' : 'Continue'}</button>
+        <div><button type="submit" className="primary" disabled={saving}>{saving ? 'Checking…' : 'Continue'}</button></div>
 
-        <p className="fine">
+        <p className="small faint">
           Use a Cloud resource management API key that can create environments. The key and secret stay in memory for
           this session only; PIMS remembers just the region. Tableflow's native Debezium support is in Early Access, so
           your organisation must be enrolled. Provisioned resources are billed to your Confluent Cloud account until you

@@ -27,7 +27,7 @@ export function SchemaHelper({info, onInsert}: Props) {
     <aside className="schema" aria-label="Table schemas">
       <header className="schema-head">
         <h3>Tables</h3>
-        <span className="fine">Click a name to put it in the query.</span>
+        <span className="small faint">Click a name to put it in the query.</span>
       </header>
       <div className="schema-list">
         {TABLE_DOCS.map((t) => (
@@ -41,7 +41,7 @@ export function SchemaHelper({info, onInsert}: Props) {
           />
         ))}
       </div>
-      <p className="fine schema-foot">
+      <p className="small faint schema-foot">
         Columns and types are those of the MySQL tables. Run <code>DESCRIBE</code> on a table for the Iceberg table's own.
       </p>
     </aside>
@@ -64,7 +64,7 @@ function TableEntry({table, qualified, open, onToggle, onInsert}: {
             <path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           <code className="schema-name">{table.name}</code>
-          <span className="fine">{table.columns.length} columns</span>
+          <span className="small faint">{table.columns.length} columns</span>
         </button>
         <button className="schema-insert" onClick={() => onInsert(qualified)} title={`Insert ${qualified}`} aria-label={`Insert ${qualified} into the query`}>
           Insert
@@ -72,7 +72,7 @@ function TableEntry({table, qualified, open, onToggle, onInsert}: {
       </div>
       {open && (
         <div id={bodyId} className="schema-body">
-          <p className="fine schema-summary">{table.summary}</p>
+          <p className="small faint schema-summary">{table.summary}</p>
           <ul className="schema-cols">
             {table.columns.map((c) => <Column key={c.name} column={c} onInsert={onInsert}/>)}
           </ul>

@@ -10,8 +10,8 @@ export function ActivityLog({logs}: {logs: LogEntry[]}) {
   }, [logs, follow]);
 
   return (
-    <section className="card log-card">
-      <header className="card-head">
+    <section className="pane log-pane">
+      <header className="panel-head">
         <h2>Activity</h2>
         <label className="inline"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)}/> Follow</label>
       </header>

@@ -99,11 +99,11 @@ export function QueryPanel({info, ready}: {info: QueryInfo; ready: boolean}) {
     <section className="query" aria-labelledby="query-title">
       <header className="query-head">
         <h2 id="query-title">SQL</h2>
-        <span className="fine query-note">
+        <span className="small faint query-note">
           {ready ? 'Runs in the DuckDB container, in a fresh session each time.' : 'Set up the demo to run queries.'}
         </span>
         <div className="head-actions">
-          <span className="fine query-keys">{RUN_KEYS} to run</span>
+          <span className="small faint query-keys">{RUN_KEYS} to run</span>
           <button aria-pressed={schemaOpen} aria-controls="schema-panel" onClick={() => setSchemaOpen(!schemaOpen)}>
             Tables
           </button>
@@ -132,10 +132,10 @@ export function QueryPanel({info, ready}: {info: QueryInfo; ready: boolean}) {
           />
 
           <div className="query-output">
-            {error && <p className="error query-error" role="alert">{error}</p>}
+            {error && <p className="text-danger query-error" role="alert">{error}</p>}
             {result && <QueryResults result={result}/>}
             {!error && !result && (
-              <p className="fine query-empty">
+              <p className="small faint query-empty">
                 {info.catalog && info.namespace
                   ? <>The Tableflow tables are attached as <code>{info.catalog}."{info.namespace}".&lt;table&gt;</code>
                     {tables.length > 0 && <>: {tables.map((t, i) => <span key={t}>{i > 0 && ', '}<code>{t}</code></span>)}</>}.
@@ -166,7 +166,7 @@ function QueryResults({result}: {result: QueryResult}) {
   const shown = rows.length;
   return (
     <div className="query-result">
-      <p className="fine query-status" role="status">
+      <p className="small faint query-status" role="status">
         {totalRows === 0
           ? 'No rows returned'
           : `${shown === totalRows ? totalRows.toLocaleString() : `First ${shown.toLocaleString()} of ${totalRows.toLocaleString()}`} ${totalRows === 1 ? 'row' : 'rows'}`}
@@ -174,8 +174,8 @@ function QueryResults({result}: {result: QueryResult}) {
         {shown < totalRows && ' · Add a LIMIT or a WHERE to see the rest'}
       </p>
       {columns.length > 0 && (
-        <div className="table-wrap query-table" tabIndex={0} role="region" aria-label="Query results">
-          <table className="data">
+        <div className="table-box query-table" tabIndex={0} role="region" aria-label="Query results">
+          <table className="data query-grid">
             <thead>
               <tr>{columns.map((c, i) => <th key={i} className={numeric[i] ? 'num' : undefined}>{c}</th>)}</tr>
             </thead>

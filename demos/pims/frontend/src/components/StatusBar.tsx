@@ -5,6 +5,9 @@ import {SetupSteps} from './SetupSteps';
 
 type Tone = 'idle' | 'busy' | 'ok' | 'bad';
 
+/** The shared .dot tone of each state. */
+const DOT: Record<Tone, string> = {idle: '', busy: 'busy', ok: 'ok', bad: 'danger'};
+
 /** summarize reduces the setup steps to the one line the status bar shows. */
 function summarize(steps: Step[], busy: AppState['busy']): {tone: Tone; text: string; done: number} {
   const done = steps.filter((s) => s.status === 'done').length;
@@ -53,29 +56,29 @@ export function StatusBar({steps, busy, region, errorCount, warnCount, onOpenLog
             {...handleProps}
           />
           <div className="status-drawer-body">
-            <header className="card-head"><h2>Setup</h2></header>
+            <header className="panel-head"><h2>Setup</h2></header>
             <SetupSteps steps={steps}/>
           </div>
         </section>
       )}
 
       <div className="statusbar">
-        <button className="status-toggle" aria-expanded={open} aria-controls="status-drawer" onClick={() => setOpen(!open)}>
-          <span className={`status-dot status-${tone}`} aria-hidden="true"/>
+        <button className="quiet sm status-toggle" aria-expanded={open} aria-controls="status-drawer" onClick={() => setOpen(!open)}>
+          <span className={`dot ${DOT[tone]}`} aria-hidden="true"/>
           <span className="status-text" role="status">{text}</span>
           {steps.length > 0 && (
             <>
               <span
-                className="status-meter"
+                className="meter"
                 role="progressbar"
                 aria-label="Setup steps done"
                 aria-valuemin={0}
                 aria-valuemax={steps.length}
                 aria-valuenow={done}
               >
-                <span style={{width: `${(done / steps.length) * 100}%`}}/>
+                <i style={{width: `${(done / steps.length) * 100}%`}}/>
               </span>
-              <span className="status-steps">{done}/{steps.length}</span>
+              <span className="num">{done}/{steps.length}</span>
             </>
           )}
           <svg className={open ? 'status-chevron status-chevron-open' : 'status-chevron'} viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
@@ -83,18 +86,18 @@ export function StatusBar({steps, busy, region, errorCount, warnCount, onOpenLog
           </svg>
         </button>
 
-        <span className="status-spacer"/>
+        <span className="spacer"/>
         {errorCount > 0 && (
-          <button className="status-count status-count-error" onClick={onOpenLogs}>
-            {errorCount} {errorCount === 1 ? 'error' : 'errors'}
+          <button className="quiet sm" onClick={onOpenLogs}>
+            <span className="text-danger">{errorCount} {errorCount === 1 ? 'error' : 'errors'}</span>
           </button>
         )}
         {warnCount > 0 && (
-          <button className="status-count status-count-warn" onClick={onOpenLogs}>
-            {warnCount} {warnCount === 1 ? 'warning' : 'warnings'}
+          <button className="quiet sm" onClick={onOpenLogs}>
+            <span className="text-warn">{warnCount} {warnCount === 1 ? 'warning' : 'warnings'}</span>
           </button>
         )}
-        <span className="status-region" title="AWS region">{region}</span>
+        <span className="faint" title="AWS region">{region}</span>
       </div>
     </footer>
   );

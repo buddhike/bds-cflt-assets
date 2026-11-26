@@ -77,10 +77,10 @@ const STEPS = [
 
 export function DataFlow({active}: {active: boolean}) {
   return (
-    <section className="card dataflow">
-      <header className="card-head">
+    <section className="pane dataflow">
+      <header className="panel-head">
         <h2>Data flow</h2>
-        <span className={active ? 'pill pill-on' : 'pill'}>{active ? '● Simulator running' : 'Simulator idle'}</span>
+        <span className={active ? 'pill ok' : 'pill'}>{active ? 'Simulator running' : 'Simulator idle'}</span>
       </header>
 
       <div className="flow-scroll">
@@ -143,7 +143,7 @@ export function DataFlow({active}: {active: boolean}) {
         <p className="formula">
           processing freshness = when Tableflow wrote the record − when it picked the record up
         </p>
-        <ul className="fine how-notes">
+        <ul className="small faint how-notes">
           <li>
             Event freshness is the age of the newest record Tableflow has written to the table, so it includes the whole
             path before Tableflow: the MySQL write, Debezium capture and Kafka. Processing freshness covers only

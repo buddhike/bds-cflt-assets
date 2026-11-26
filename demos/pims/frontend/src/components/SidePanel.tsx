@@ -43,7 +43,7 @@ export function SidePanel({section, onSelect, logs, latency, simRunning, errorCo
           return (
             <button
               key={s.id}
-              className={active ? 'rail-button rail-active' : 'rail-button'}
+              aria-current={active}
               aria-expanded={active}
               aria-controls={DRAWER_ID}
               onClick={() => onSelect(active ? null : s.id)}
@@ -52,7 +52,7 @@ export function SidePanel({section, onSelect, logs, latency, simRunning, errorCo
               <span>{s.label}</span>
               {s.id === 'logs' && errorCount > 0
                 ? <span className="badge-count" aria-label={`${errorCount} errors`}>{errorCount}</span>
-                : s.id === 'logs' && warnCount > 0 && <span className="badge-count badge-warn" aria-label={`${warnCount} warnings`}>{warnCount}</span>}
+                : s.id === 'logs' && warnCount > 0 && <span className="badge-count warn" aria-label={`${warnCount} warnings`}>{warnCount}</span>}
             </button>
           );
         })}

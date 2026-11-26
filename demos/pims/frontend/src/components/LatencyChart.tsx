@@ -1,5 +1,6 @@
 import {useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {LatencyResult, LatencySample} from '../api';
+import {Notice} from './Notice';
 
 // Fixed series order: identity follows the table, never its rank. The
 // three hues are the first slots of the validated categorical palette
@@ -126,7 +127,7 @@ function MetricChart({title, subtitle, samples}: {title: string; subtitle: strin
   return (
     <div className="metric">
       <h3>{title}</h3>
-      <p className="fine">{subtitle}</p>
+      <p className="small faint">{subtitle}</p>
       <div ref={wrap} className="chart-wrap">
         <svg
           width={width}
@@ -214,36 +215,36 @@ export function LatencyChart({latency}: {latency: LatencyResult}) {
   });
 
   return (
-    <section className="card latency">
-      <header className="card-head">
+    <section className="pane latency">
+      <header className="panel-head">
         <h2>Tableflow freshness latency</h2>
         <div className="head-actions">
           <span className="pill" title="Tableflow's freshness metrics are in Preview and can change before general availability.">Preview metrics</span>
           <button className="link" onClick={() => setShowTable(!showTable)}>{showTable ? 'Show charts' : 'Show table'}</button>
         </div>
       </header>
-      <p className="fine">
+      <p className="small faint">
         Tableflow's own freshness metrics, read from the Confluent Cloud Metrics API once a minute: one value per table
         per minute over the last 5 hours. Tableflow updates them when it commits to a table, so they move in steps, and
         they reach the API about three minutes late.
         {latency.observedAt && <> Last read {new Date(latency.observedAt).toLocaleTimeString()}.</>}
       </p>
 
-      <div className="tiles">
+      <div className="kpis">
         {latest.map((s) => (
-          <div key={s.table} className="tile">
-            <span className="tile-label"><i className="swatch" style={{background: s.color}}/>{s.label}</span>
-            <div className="tile-pair">
+          <div key={s.table} className="kpi">
+            <span className="label"><i className="swatch" style={{background: s.color}}/>{s.label}</span>
+            <div className="kpi-pair">
               <div>
-                <span className="tile-key">Event</span>
-                <span className="tile-value">{s.e ? fmtDuration(s.e.ms) : '—'}</span>
+                <span className="label">Event</span>
+                <span className="kpi-value">{s.e ? fmtDuration(s.e.ms) : '—'}</span>
               </div>
               <div>
-                <span className="tile-key">Processing</span>
-                <span className="tile-value">{s.p ? fmtDuration(s.p.ms) : '—'}</span>
+                <span className="label">Processing</span>
+                <span className="kpi-value">{s.p ? fmtDuration(s.p.ms) : '—'}</span>
               </div>
             </div>
-            <span className="tile-sub">{s.t ? `as of ${fmtTime(s.t)}` : (latency.error ? 'metrics unavailable' : 'waiting for Tableflow to report')}</span>
+            <span className="kpi-sub">{s.t ? `as of ${fmtTime(s.t)}` : (latency.error ? 'metrics unavailable' : 'waiting for Tableflow to report')}</span>
           </div>
         ))}
       </div>
@@ -253,7 +254,7 @@ export function LatencyChart({latency}: {latency: LatencyResult}) {
       </ul>
 
       {showTable ? (
-        <div className="table-wrap">
+        <div className="table-box table-wrap">
           <table className="data">
             <thead><tr><th>Minute</th><th>Table</th><th>Event freshness</th><th>Processing freshness</th></tr></thead>
             <tbody>
@@ -285,9 +286,9 @@ export function LatencyChart({latency}: {latency: LatencyResult}) {
       )}
 
       {latency.error && (
-        <p className="error">
-          Could not read Tableflow's metrics{hasData ? ' (showing the last reading)' : ''}: {latency.error}
-        </p>
+        <Notice tone="warn" title="Could not read Tableflow's metrics.">
+          {hasData ? 'Showing the last reading. ' : ''}{latency.error}
+        </Notice>
       )}
     </section>
   );

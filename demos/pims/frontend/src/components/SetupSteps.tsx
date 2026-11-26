@@ -1,7 +1,8 @@
 import {Step} from '../api';
 
-const ICON: Record<Step['status'], string> = {pending: '○', running: '◐', done: '✓', failed: '✕'};
+const ICON: Record<Step['status'], string> = {pending: '○', running: '●', done: '✓', failed: '✕'};
 const LABEL: Record<Step['status'], string> = {pending: 'Pending', running: 'Running', done: 'Done', failed: 'Failed'};
+const CLASS: Record<Step['status'], string> = {pending: '', running: 'run', done: 'done', failed: 'fail'};
 
 function duration(s: Step): string {
   if (!s.startedAt) return '';
@@ -14,13 +15,13 @@ export function SetupSteps({steps}: {steps: Step[]}) {
   return (
     <ol className="steps">
       {steps.map((s) => (
-        <li key={s.id} className={`step step-${s.status}`}>
-          <span className="step-icon" aria-label={LABEL[s.status]} title={LABEL[s.status]}>{ICON[s.status]}</span>
-          <span className="step-body">
-            <span className="step-title">{s.title}</span>
-            {s.detail && <span className="step-detail">{s.detail}</span>}
+        <li key={s.id} className={`step ${CLASS[s.status]}`}>
+          <span className="ico" aria-label={LABEL[s.status]} title={LABEL[s.status]}>{ICON[s.status]}</span>
+          <span>
+            {s.title}
+            {s.detail && <small>{s.detail}</small>}
           </span>
-          <span className="step-time">{duration(s)}</span>
+          <time>{duration(s)}</time>
         </li>
       ))}
     </ol>
