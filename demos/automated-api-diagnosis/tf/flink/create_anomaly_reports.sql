@@ -4,7 +4,7 @@ CREATE TABLE api_anomaly_ai_reports (
   detected_at TIMESTAMP_LTZ(3) NOT NULL,
   agent_status STRING NOT NULL,
   report STRING NOT NULL
-)
-WITH (
+) WITH (
+  'changelog.mode' = 'append',
   'kafka.consumer.isolation-level' = 'read-uncommitted'
 )

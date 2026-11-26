@@ -1,0 +1,12 @@
+CREATE MODEL bedrock_agent_model
+INPUT (request STRING)
+OUTPUT (response STRING)
+WITH (
+    'provider' = 'bedrock',
+    'task' = 'text_generation',
+    'bedrock.connection' = '${connection}',
+    'bedrock.params.max_tokens' = '131072',
+    'bedrock.input_format' = 'OPENAI-CHAT',
+    'bedrock.output_format' = 'OPENAI-CHAT',
+    'bedrock.enable_json_deep_parsing' = 'true'
+)

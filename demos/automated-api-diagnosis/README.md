@@ -22,10 +22,14 @@ in [docs/specs/launchpad.md](docs/specs/launchpad.md). [SPEC.md](SPEC.md) is the
 
 ## The AI agent
 
-The agent is not included: the source demo ran it by hand and kept no definition. Copy
-[tf/ai.tf.example](tf/ai.tf.example) to `tf/ai.tf`, replace its TODOs and set
-`ai_agent_deployed` to `true` in `tf/variables.tf`. Until then the AI reports tab says that
-no agent is deployed.
+An agent on Amazon Bedrock (`openai.gpt-oss-120b-1:0` in `ap-southeast-2`, set by the
+`bedrock_model_id` and `bedrock_region` variables) writes up each anomaly. The AWS account
+needs access to that model enabled in the Bedrock console. Terraform makes the credential:
+an IAM user that may invoke only that model, whose key goes straight into the Flink
+connection. No credential is in the repository, and none is printed. See [tf/ai.tf](tf/ai.tf).
+The agent writes a report for an API and HTTP status at most once every five minutes. That
+limit is `EmitAfterGap`, a custom Flink function whose Java project is in
+[udf/emit-after-gap](udf/emit-after-gap); run its `build.sh` (needs Docker) after changing it.
 
 ## Develop
 

@@ -24,7 +24,7 @@ locals {
     { name = "APIDIAG_KAFKA_BOOTSTRAP", value = replace(confluent_kafka_cluster.demo.bootstrap_endpoint, "SASL_SSL://", "") },
     { name = "APIDIAG_SCHEMA_REGISTRY_URL", value = data.confluent_schema_registry_cluster.demo.rest_endpoint },
     { name = "APIDIAG_TOPIC", value = local.topic },
-    { name = "APIDIAG_AI_REPORTS", value = tostring(var.ai_agent_deployed) },
+    { name = "APIDIAG_AI_REPORTS", value = "true" },
   ]
   app_secrets = [
     { name = "APIDIAG_ACCESS_TOKEN", valueFrom = local.from_secret["ACCESS_TOKEN"] },

@@ -65,16 +65,6 @@ scored_health AS (
   FROM api_health_windows
 ),
 
-scored_health_with_lag AS (
-  SELECT
-    *,
-    LAG(anomaly.is_anomaly) OVER (
-      PARTITION BY api_id
-      ORDER BY window_time
-    ) AS previous_is_anomaly
-  FROM scored_health
-),
-
 status_windows AS (
   SELECT
     window_start,
@@ -111,17 +101,10 @@ SELECT
   h.anomaly.forecast_value,
   h.anomaly.upper_bound,
   h.anomaly.lower_bound,
-  h.anomaly.is_anomaly
+  COALESCE(h.anomaly.is_anomaly, FALSE) AS is_anomaly
 
-FROM scored_health_with_lag AS h
+FROM scored_health AS h
 LEFT JOIN status_windows AS s
   ON h.api_id = s.api_id
  AND s.window_time > h.window_time - INTERVAL '10' SECOND
  AND s.window_time <= h.window_time
-
--- Onset (rising edge: healthy -> anomalous) OR recovery (falling edge:
--- anomalous -> healthy). A recovery window has no rows in status_windows
--- (that is why it recovered), so the LEFT JOIN is required: an INNER JOIN would
--- drop every recovery row instead of emitting it with the COALESCE'd sentinels.
-WHERE (h.anomaly.is_anomaly = TRUE  AND COALESCE(h.previous_is_anomaly, FALSE) = FALSE)
-   OR (h.anomaly.is_anomaly = FALSE AND COALESCE(h.previous_is_anomaly, FALSE) = TRUE)

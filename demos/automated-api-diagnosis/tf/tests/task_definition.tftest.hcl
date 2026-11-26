@@ -139,8 +139,8 @@ run "task_definition" {
   }
 
   assert {
-    condition     = { for e in jsondecode(aws_ecs_task_definition.demo.container_definitions)[0].environment : e.name => e.value }["APIDIAG_AI_REPORTS"] == "false"
-    error_message = "without an agent the app is told there is none"
+    condition     = { for e in jsondecode(aws_ecs_task_definition.demo.container_definitions)[0].environment : e.name => e.value }["APIDIAG_AI_REPORTS"] == "true"
+    error_message = "the agent is always deployed, so the app is told there is one"
   }
 
   assert {
@@ -183,16 +183,56 @@ run "flink_statements" {
   }
 }
 
-run "ai_agent_flag" {
+run "ai_agent" {
   command = apply
 
-  variables {
-    ai_agent_deployed = true
+  # The Bedrock key is made here and may do one thing.
+  assert {
+    condition     = one(data.aws_iam_policy_document.invoke_model.statement).actions == toset(["bedrock:InvokeModel"]) && one(data.aws_iam_policy_document.invoke_model.statement).resources == toset(["arn:aws:bedrock:ap-southeast-2::foundation-model/openai.gpt-oss-120b-1:0"])
+    error_message = "the Flink user may invoke the one model and nothing else"
   }
 
   assert {
-    condition     = { for e in jsondecode(aws_ecs_task_definition.demo.container_definitions)[0].environment : e.name => e.value }["APIDIAG_AI_REPORTS"] == "true"
-    error_message = "the app must be told an agent is deployed"
+    condition     = confluent_flink_connection.bedrock.type == "BEDROCK" && confluent_flink_connection.bedrock.endpoint == "https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/openai.gpt-oss-120b-1:0/invoke"
+    error_message = "the connection must call the model in the Bedrock region, not the demo's"
+  }
+
+  assert {
+    condition     = confluent_flink_connection.bedrock.aws_access_key == aws_iam_access_key.flink_llm.id
+    error_message = "the connection uses the key Terraform made"
+  }
+
+  # No statement may carry a credential: the key reaches Confluent only through the connection.
+  assert {
+    condition = alltrue([for st in [
+      confluent_flink_statement.ai_model, confluent_flink_statement.ai_agent, confluent_flink_statement.ai_reports,
+      confluent_flink_statement.emit_after_gap, confluent_flink_statement.create_anomalies,
+    ] : !strcontains(st.statement, aws_iam_access_key.flink_llm.id) && !strcontains(st.statement, aws_iam_access_key.flink_llm.secret)])
+    error_message = "a Flink statement contains the Bedrock key"
+  }
+
+  assert {
+    condition     = strcontains(confluent_flink_statement.ai_model.statement, "'bedrock.connection' = 'automated-api-diagnosis-ab12cd-bedrock'")
+    error_message = "the model must use the connection Terraform made"
+  }
+
+  assert {
+    condition     = strcontains(confluent_flink_statement.emit_after_gap.statement, "confluent-artifact://${confluent_flink_artifact.emit_after_gap.id}")
+    error_message = "the function must be registered from the artifact Terraform uploaded"
+  }
+}
+
+run "bedrock_region_and_model" {
+  command = apply
+
+  variables {
+    bedrock_region   = "us-west-2"
+    bedrock_model_id = "openai.gpt-oss-20b-1:0"
+  }
+
+  assert {
+    condition     = one(data.aws_iam_policy_document.invoke_model.statement).resources == toset(["arn:aws:bedrock:us-west-2::foundation-model/openai.gpt-oss-20b-1:0"]) && startswith(confluent_flink_connection.bedrock.endpoint, "https://bedrock-runtime.us-west-2.amazonaws.com/model/openai.gpt-oss-20b-1:0/")
+    error_message = "the policy and the connection must follow the model and region variables"
   }
 }
 

@@ -31,8 +31,8 @@
     }
   }
 
-  // The Flink job emits a row only when an API turns unhealthy or recovers, so a page
-  // opened later learns each API's current state from what the server has kept.
+  // The Flink job emits rows for every 10-second window, so a page opened later learns
+  // each API's current state from the latest of the rows the server has kept.
   async function replayBacklog() {
     try {
       for (const ev of await GetHealthBacklog()) bufferRow(ev)

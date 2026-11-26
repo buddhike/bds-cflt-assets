@@ -14,19 +14,23 @@ Browser ─HTTPS─► CloudFront ─VPC origin─► internal ALB :80 ──►
                                                                   ▼                         │
  Confluent Cloud   gateway-logs ──► Flink: detect_anomalies ──► api_unhealthy_events ──► (monitor tab)
                                                   │
-                          (optional, tf/ai.tf)    └──► Flink: AI agent ──► api_anomaly_ai_reports ──► (AI reports tab)
+                                                  └──► api_anomalies ──► Flink: EmitAfterGap ──► AI agent ──► Bedrock
+                                                                                                   │
+                                                          api_anomaly_ai_reports ──► (AI reports tab)
 ```
 
 * The app is one Go binary with the Svelte build embedded. It holds the simulator, which
   produces Avro gateway logs to `gateway-logs`, and two readers that follow
   `api_unhealthy_events` and `api_anomaly_ai_reports` from their tails.
 * The app's state lives in memory: the API settings, and the last 500 monitor events and
-  200 reports (so a tab opened later catches up; the Flink job emits an event only when an
-  API turns unhealthy or recovers). A replaced task starts from the defaults.
+  200 reports (so a tab opened later catches up; the Flink job emits rows for every
+  10-second window, so the last 500 hold each API's latest state). A replaced task starts
+  from the defaults.
 * **Known limit.** The readers start at the tail of their topics and the backlog is not
-  stored. If the task is replaced, or a reader is down for a while, while an API is
-  unhealthy, the monitor shows it as healthy until it recovers and turns unhealthy again.
-  For a demo that is acceptable; reading recent history from a timestamp would fix it.
+  stored. If the task is replaced, or a reader is down for a while, the monitor shows an
+  API as healthy until its next window arrives, at most ten seconds later. The AI reports
+  tab loses the reports it has not seen: a report is written once per API and status per
+  five minutes, so a missed one is not repeated at once.
 
 ## Setup, in order
 
@@ -41,7 +45,10 @@ All of it is Terraform, run by Launchpad. There is nothing for the app to set up
    `detect_anomalies`, the long-running `INSERT` that scores each API's unhealthy rate
    per 10-second window with `ML_DETECT_ANOMALIES_ROBUST`. It starts from the first
    record, because the detector needs 30 windows (five minutes) of history. The SQL is in
-   `tf/flink/`.
+   `tf/flink/`. `create_anomalies` makes the `api_anomalies` table from it.
+   Then the agent (`tf/ai.tf`, see below): the IAM user and key, the Bedrock connection, the
+   `EmitAfterGap` artifact and function, the model, the agent, and `ai_reports`, a second
+   long-running `INSERT`.
 4. AWS: network, load balancer, CloudFront, secret, task definition and service. The
    service waits for the two tables, so the app's readers always have a topic.
    Terraform waits until the load balancer sees `/healthz`.
@@ -50,14 +57,39 @@ The app starts the simulation by itself (`APIDIAG_AUTOSTART`, on by default), so
 detector has a baseline by the time anyone opens the page. After about five minutes, break
 an API.
 
-## The AI agent is yours to add
+## The AI agent
 
-The source demo's agent was run by hand and never written down, so none is deployed.
-`tf/ai.tf.example` is a working shape (a Bedrock connection, a model, an agent and the
-`INSERT` that calls it); copy it to `tf/ai.tf`, replace its TODOs, and set
-`ai_agent_deployed` to `true`. What the app needs from the agent is rows in
-`api_anomaly_ai_reports`, whose columns are fixed in `tf/flink/create_anomaly_reports.sql`
-and all `NOT NULL`. Until then the AI reports tab says no agent is deployed.
+`tf/ai.tf` deploys an agent that runs on Amazon Bedrock: model `openai.gpt-oss-120b-1:0`
+in `ap-southeast-2` (variables `bedrock_model_id`, `bedrock_region`). The AWS account needs
+model access enabled in the Bedrock console, and the runner's role (`DemoDeployPolicyArn`)
+must be able to create an IAM user and its key, which are the only IAM this demo makes
+beyond the ECS execution role.
+
+* **Credential.** Terraform creates an IAM user whose only permission is `bedrock:InvokeModel`
+  on that one model, and an access key for it. The key goes from `aws_iam_access_key` into
+  `confluent_flink_connection` (type `BEDROCK`), both sensitive, so Terraform does not print
+  it in its output (the runner must not set `TF_LOG`, whose debug levels can log requests). It is not in the repository, not an output, not in a Flink statement, not in
+  the task. It is in Terraform's state in Launchpad's bucket, like the demo's other secrets,
+  and destroy deletes the user and key.
+* **Flow.** `create_anomalies.sql` copies the anomalous rows (not the `RECOVERED` ones) of
+  `api_unhealthy_events` into `api_anomalies`. `ai_reports.sql` passes them through
+  `EmitAfterGap`, which lets through the first row per API and HTTP status and then none
+  for five minutes (wall clock), so a sustained failure gets one report. Each row goes to
+  `AI_RUN_AGENT('anomaly_investigation_agent', ...)` and the answer is written to
+  `api_anomaly_ai_reports`, whose columns are fixed in `tf/flink/create_anomaly_reports.sql`
+  and all `NOT NULL`. The model, agent and prompt are in `tf/flink/ai_model.sql.tftpl` and
+  `ai_agent.sql`. The agent is told to make up its findings: it has no tools and sees
+  nothing of the infrastructure.
+* **`EmitAfterGap`** is a Java process table function, a Maven project in
+  `udf/emit-after-gap/` (Flink 2.3, Java 11, with unit tests). Terraform uploads its jar
+  (`tf/udf/emit-after-gap.jar`) as a Confluent artifact and registers it with
+  `CREATE FUNCTION`. The jar is committed because the runner has no Java toolchain.
+  `udf/emit-after-gap/build.sh` tests and builds it in a pinned Maven image, so the same
+  source gives the same bytes, and a CI workflow fails if the committed jar is not what the
+  source builds. Terraform registers the function once, so a new jar reaches a running demo
+  only after teardown and a new launch.
+* The first report appears after the detector has its five-minute baseline, an API is
+  broken, and the model answers.
 
 ## Shutdown
 
@@ -78,7 +110,7 @@ checks that Terraform sets exactly what the server reads.
 | `APIDIAG_KAFKA_API_KEY`, `APIDIAG_KAFKA_API_SECRET` | yes | |
 | `APIDIAG_SCHEMA_REGISTRY_URL`, `APIDIAG_SCHEMA_REGISTRY_API_KEY`, `APIDIAG_SCHEMA_REGISTRY_API_SECRET` | key and secret | |
 | `APIDIAG_TOPIC` | | The simulator's topic. Default `gateway-logs` |
-| `APIDIAG_AI_REPORTS` | | `true` if `ai.tf` deploys an agent. Default `false` |
+| `APIDIAG_AI_REPORTS` | | `true` when the agent is deployed, which `ai.tf` always does. Default `false` |
 | `APIDIAG_AUTOSTART` | | Start the simulation at start-up. Default `true` |
 | `APIDIAG_LISTEN` | | Default `:8080` |
 

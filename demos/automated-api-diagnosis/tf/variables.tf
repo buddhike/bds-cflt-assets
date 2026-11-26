@@ -65,13 +65,19 @@ variable "partitions" {
 }
 
 variable "flink_max_cfu" {
-  description = "Most Confluent Flink Units the compute pool may use. The anomaly detection statement needs a few, and an AI agent statement needs more. 5 is the smallest a pool may have."
+  description = "Most Confluent Flink Units the compute pool may use. The anomaly detection and AI agent statements need a few each. 5 is the smallest a pool may have."
   type        = number
   default     = 10
 }
 
-variable "ai_agent_deployed" {
-  description = "Whether ai.tf (copied from ai.tf.example) deploys an AI agent that writes to api_anomaly_ai_reports. It only changes what the AI reports tab says while it is empty."
-  type        = bool
-  default     = false
+variable "bedrock_model_id" {
+  description = "The Amazon Bedrock model the AI agent uses. The account needs access to it enabled in the Bedrock console."
+  type        = string
+  default     = "openai.gpt-oss-120b-1:0"
+}
+
+variable "bedrock_region" {
+  description = "Region of the Bedrock model. It need not be the demo's own region, but the model must be offered there."
+  type        = string
+  default     = "ap-southeast-2"
 }

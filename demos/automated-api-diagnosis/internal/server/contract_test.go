@@ -1,8 +1,11 @@
 package server
 
 import (
+	"archive/zip"
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -120,18 +123,116 @@ func TestReportTableColumnsAreNotNull(t *testing.T) {
 	}
 }
 
-// Nothing the example may leave behind in the tree should run by itself, and Terraform must
-// not declare a backend: Launchpad supplies it.
-func TestNoBackendAndTheAIExampleIsNotLive(t *testing.T) {
-	for _, f := range []string{"versions.tf", "confluent.tf", "flink.tf", "ecs.tf", "network.tf", "cloudfront.tf", "secrets.tf", "outputs.tf", "variables.tf"} {
+// Terraform must not declare a backend: Launchpad supplies it.
+func TestNoBackend(t *testing.T) {
+	for _, f := range []string{"versions.tf", "confluent.tf", "flink.tf", "ai.tf", "ecs.tf", "network.tf", "cloudfront.tf", "secrets.tf", "outputs.tf", "variables.tf"} {
 		if regexp.MustCompile(`backend\s+"`).MatchString(readFile(t, "../../tf/"+f)) {
 			t.Errorf("tf/%s declares a backend, but Launchpad supplies the S3 backend", f)
 		}
 	}
-	if _, err := os.Stat("../../tf/ai.tf"); err == nil {
-		t.Log("tf/ai.tf exists: the AI agent is deployed. Check variable ai_agent_deployed is true.")
-		if !regexp.MustCompile(`(?s)variable "ai_agent_deployed".*?default\s*=\s*true`).MatchString(readFile(t, "../../tf/variables.tf")) {
-			t.Error("tf/ai.tf exists, but variable ai_agent_deployed still defaults to false, so the tab will say no agent is deployed")
+}
+
+// The agent's Bedrock key is made by Terraform and travels only from aws_iam_access_key to
+// confluent_flink_connection. Nothing in the tree may hold a key, and no output or Flink
+// statement may carry one.
+func TestNoCredentialInTheTree(t *testing.T) {
+	key := regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b|(?i)aws_secret_access_key\s*[=:]\s*\S{30,}`)
+	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.IsDir() {
+			if n := d.Name(); n == "node_modules" || n == ".terraform" || n == "dist" || n == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".jar") {
+			return nil
+		}
+		if b, err := os.ReadFile(path); err == nil && key.Match(b) {
+			t.Errorf("%s contains what looks like an AWS access key id", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ai := readFile(t, "../../tf/ai.tf")
+	if !regexp.MustCompile(`aws_access_key\s*=\s*aws_iam_access_key\.flink_llm\.id`).MatchString(ai) ||
+		!regexp.MustCompile(`aws_secret_key\s*=\s*aws_iam_access_key\.flink_llm\.secret`).MatchString(ai) {
+		t.Error("the Flink connection must take its key from aws_iam_access_key.flink_llm, which Terraform makes")
+	}
+	tfs, _ := filepath.Glob("../../tf/*.tf")
+	for _, f := range tfs {
+		if filepath.Base(f) == "ai.tf" {
+			continue
+		}
+		src := readFile(t, f)
+		for _, bad := range []string{"flink_llm", "aws_iam_access_key", "aws_secret_key", "aws_access_key"} {
+			if strings.Contains(src, bad) {
+				t.Errorf("%s mentions %s: the Bedrock key must reach only the Flink connection in ai.tf", f, bad)
+			}
+		}
+	}
+	sqls, _ := filepath.Glob("../../tf/flink/*")
+	for _, f := range sqls {
+		if strings.Contains(strings.ToLower(readFile(t, f)), "aws-secret-key") {
+			t.Errorf("%s holds a credential: it belongs in the Flink connection", f)
+		}
+	}
+}
+
+// The report statement reads a table, calls a function and runs an agent that other
+// statements create, and Terraform only orders them if it says so.
+func TestReportStatementWaitsForWhatItUses(t *testing.T) {
+	ai := readFile(t, "../../tf/ai.tf")
+	m := regexp.MustCompile(`(?s)resource "confluent_flink_statement" "ai_reports" \{.*?depends_on = \[(.*?)\]`).FindStringSubmatch(ai)
+	if m == nil {
+		t.Fatal("ai.tf has no ai_reports statement with depends_on")
+	}
+	for _, dep := range []string{"ai_agent", "emit_after_gap", "create_anomalies", "create_anomaly_reports"} {
+		if !strings.Contains(m[1], "confluent_flink_statement."+dep) {
+			t.Errorf("ai_reports must depend on %s", dep)
+		}
+	}
+	sql := readFile(t, "../../tf/flink/ai_reports.sql")
+	for _, want := range []string{"INSERT INTO `" + AnomalyReportsTopic + "`", "EmitAfterGap", "TABLE api_anomalies", "anomaly_investigation_agent"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("ai_reports.sql lacks %q", want)
+		}
+	}
+	if !strings.Contains(readFile(t, "../../tf/flink/ai_agent.sql"), "CREATE AGENT anomaly_investigation_agent") {
+		t.Error("ai_agent.sql does not create the agent ai_reports.sql runs")
+	}
+	if !strings.Contains(readFile(t, "../../tf/flink/create_anomalies.sql"), "CREATE TABLE api_anomalies") {
+		t.Error("no table api_anomalies, which the report statement reads")
+	}
+}
+
+// The function is registered by class name from a committed jar, and nothing else checks
+// that the two agree.
+func TestEmitAfterGapJarHasItsClass(t *testing.T) {
+	r, err := zip.OpenReader("../../tf/udf/emit-after-gap.jar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	found := false
+	for _, f := range r.File {
+		if f.Name == "org/example/EmitAfterGap.class" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("tf/udf/emit-after-gap.jar has no org/example/EmitAfterGap.class")
+	}
+	if !strings.Contains(readFile(t, "../../tf/flink/create_emit_after_gap.sql.tftpl"), "'org.example.EmitAfterGap'") {
+		t.Error("the CREATE FUNCTION statement names a class the jar does not have")
+	}
+	src := readFile(t, "../../udf/emit-after-gap/src/main/java/org/example/EmitAfterGap.java")
+	if !strings.Contains(src, "package org.example;") || !strings.Contains(src, "public class EmitAfterGap extends ProcessTableFunction") {
+		t.Error("udf/emit-after-gap no longer defines org.example.EmitAfterGap, which the CREATE FUNCTION statement names")
 	}
 }

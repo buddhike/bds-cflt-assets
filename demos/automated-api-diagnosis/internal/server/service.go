@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	// Backlogs are what a tab opened later reads to catch up. The Flink job emits an
-	// event only when an API turns unhealthy or recovers, so without them a new tab
-	// would show every API as healthy until the next change.
+	// Backlogs are what a tab opened later reads to catch up. The Flink job emits a row
+	// per API (and HTTP status) for every 10-second window, so the last few hundred hold
+	// each API's latest state; without them a new tab would show every API as healthy
+	// until the next window arrives.
 	maxHealthBacklog = 500
 	maxReportBacklog = 200
 

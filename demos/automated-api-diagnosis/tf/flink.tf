@@ -1,8 +1,13 @@
-# Flink: finds the unhealthy APIs in the gateway logs.
+# Flink: finds the unhealthy APIs in the gateway logs, and has an AI agent write up each
+# anomaly (ai.tf).
 #
 #   gateway-logs ──► detect_anomalies.sql ──► api_unhealthy_events ──► the monitor
 #                                                      │
-#                                   (optional, ai.tf)  └─► an AI agent ──► api_anomaly_ai_reports ──► the AI reports tab
+#                                         create_anomalies.sql (is_anomaly only)
+#                                                      ▼
+#                                                api_anomalies ──► ai.tf: EmitAfterGap ──► AI agent
+#                                                                                   │
+#                                                    api_anomaly_ai_reports ◄──────┘ ──► the AI reports tab
 #
 # The statements are in flink/, run here as the demo's service account.
 
@@ -94,8 +99,32 @@ resource "confluent_flink_statement" "create_unhealthy_events" {
   depends_on = [confluent_flink_statement.alter_watermark]
 }
 
+# The anomalies alone, one row per API and HTTP status per 10-second window. The agent
+# reads this table, not api_unhealthy_events, which has a row for every window. It is a
+# table of its own, not a view, because a process table function (EmitAfterGap, in ai.tf)
+# takes a table as input. The 'RECOVERED' rows are left out: they have no status code to
+# investigate. Like the monitor's table it is read from its tail, so only anomalies that
+# happen while the demo runs are written up.
+resource "confluent_flink_statement" "create_anomalies" {
+  statement_name = "${local.name}-create-anomalies"
+  statement      = file("${path.module}/flink/create_anomalies.sql")
+  properties     = local.flink_properties
+
+  compute_pool { id = confluent_flink_compute_pool.demo.id }
+  principal { id = confluent_service_account.demo.id }
+  environment { id = confluent_environment.demo.id }
+  organization { id = data.confluent_organization.this.id }
+  credentials {
+    key    = confluent_api_key.flink.id
+    secret = confluent_api_key.flink.secret
+  }
+  rest_endpoint = data.confluent_flink_region.demo.rest_endpoint
+
+  depends_on = [confluent_flink_statement.create_unhealthy_events]
+}
+
 # The table the AI agent's reports go to, in the shape the app reads (internal/reports).
-# It exists whether or not an agent is deployed, so the app's reader always has a topic.
+# Created here, ahead of the agent, so the app's reader always has a topic.
 resource "confluent_flink_statement" "create_anomaly_reports" {
   statement_name = "${local.name}-create-anomaly-reports"
   statement      = file("${path.module}/flink/create_anomaly_reports.sql")

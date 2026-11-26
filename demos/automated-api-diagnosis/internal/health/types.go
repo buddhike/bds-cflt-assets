@@ -6,10 +6,10 @@ package health
 
 import "time"
 
-// HealthEvent mirrors one row of api_unhealthy_events. IsAnomaly=true is
-// an "onset" (the API just became unhealthy); IsAnomaly=false is a
-// "recovery" (the API just returned to healthy) - see the Flink query's
-// WHERE clause for the exact rising/falling-edge transition logic.
+// HealthEvent mirrors one row of api_unhealthy_events: an API's health in one
+// 10-second window. IsAnomaly says whether its unhealthy rate was outside the
+// detector's bounds. A window with no failing calls has one row with HTTPStatus
+// "RECOVERED"; otherwise there is a row per failing status code.
 //
 // DetectedAt is a plain int64 (Unix milliseconds), not time.Time: Flink
 // serializes TIMESTAMP_LTZ using Avro's local-timestamp-millis logical

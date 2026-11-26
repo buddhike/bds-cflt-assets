@@ -17,30 +17,32 @@ go vet ./... && go test -race ./...         # Go unit tests: no cloud account ne
 cd frontend && npm ci && npm run build     # the UI, which the server binary embeds
 cd tf && terraform init -backend=false && terraform validate && terraform test   # task definition and Flink statements against mock providers
 docker build -f docker/Dockerfile -t automated-api-diagnosis .
+udf/emit-after-gap/build.sh                # test the Flink function and rebuild tf/udf/emit-after-gap.jar (Docker)
 ```
 
 ## Architecture
 
-Data path: `simulator → gateway-logs (Avro) → Flink detect_anomalies → api_unhealthy_events → monitor` and, if an agent is deployed, `→ AI agent → api_anomaly_ai_reports → AI reports tab`.
+Data path: `simulator → gateway-logs (Avro) → Flink detect_anomalies → api_unhealthy_events → monitor` and `→ api_anomalies → EmitAfterGap → AI agent (Bedrock) → api_anomaly_ai_reports → AI reports tab`.
 
 - `cmd/server` is the binary; `internal/server` is its HTTP and SSE layer, access-token gate and `Service`. Terraform provisions everything: the app has no setup step and creates nothing. `Service` runs the simulator and both Kafka readers, keeps in-memory backlogs for tabs opened later, and validates every change to an API's settings.
 - `internal/simulator`: the 10 APIs, their event generation and cascade rules, the Kafka producer. `Engine` takes a `Sink` (the producer, or a fake in tests).
 - `internal/health`, `internal/reports`: Kafka readers of `api_unhealthy_events` (key and value both Avro) and `api_anomaly_ai_reports`.
 - `frontend/`: Svelte. `frontend/src/api.js` is the only module that calls the backend (`fetch` and one `EventSource`); components import from it.
-- `tf/`: Confluent Cloud (`confluent.tf`), Flink (`flink.tf`, SQL in `tf/flink/`), AWS (`network.tf`, `cloudfront.tf`, `ecs.tf`, `secrets.tf`). `tf/ai.tf.example` is the optional AI agent.
+- `tf/`: Confluent Cloud (`confluent.tf`), Flink (`flink.tf`, SQL in `tf/flink/`), AWS (`network.tf`, `cloudfront.tf`, `ecs.tf`, `secrets.tf`). `tf/ai.tf` is the Bedrock AI agent (IAM user, Flink connection, model, agent, the `EmitAfterGap` function). `udf/emit-after-gap/` is the Maven project of that function.
 - `docker/Dockerfile` builds the image, and `.github/workflows/automated-api-diagnosis-image.yml` publishes it. It is a glibc build with cgo, because confluent-kafka-go links librdkafka.
 
 ## Invariants to preserve
 
-- **Launchpad's interface**: `tf/` declares `aws_region`, `launchpad_tags`, both Confluent variables and the `launchpad_url` output, and no backend. Launchpad reads only top-level `.tf` files, so `ai.tf.example` is inert until copied.
+- **Launchpad's interface**: `tf/` declares `aws_region`, `launchpad_tags`, both Confluent variables and the `launchpad_url` output, and no backend. Launchpad reads only top-level `.tf` files, so keep these in top-level files (`ai.tf` is one).
 - **Terraform and the server agree**: the env vars in `tf/ecs.tf` and `internal/server/config.go` must match, `tf/gateway-logs-value.avsc` must equal `simulator.AvroSchemaJSON()`, and topic and table names in Go, `tf/confluent.tf` and `tf/flink/*.sql` must agree. `internal/server/contract_test.go` checks all of it. Change `KongLogEvent` and you must regenerate the `.avsc`.
 - **Schema before topic**: Terraform registers `gateway-logs-value` before it creates the topic, so Flink never reads the topic without a schema (a topic Flink has read with no schema stays a single BYTES column). Don't reorder.
 - **`api_anomaly_ai_reports` columns are all `NOT NULL`**: `internal/reports` decodes into plain `string`/`int64`, which cannot read a nullable Avro union. `detected_at` is `TIMESTAMP_LTZ(3)`, decoded into an `int64` of milliseconds on purpose (a `time.Time` would be read as microseconds). Same for `health.HealthEvent`, whose key (`api_id`, `detected_at`, `http_status`) and value are decoded separately.
-- **The detector is the flip-detection query** (`tf/flink/detect_anomalies.sql`): it emits a row when an API turns unhealthy and one when it recovers (`http_status = 'RECOVERED'`), not one per window. That is why the server keeps backlogs: a late tab would otherwise show every API as healthy. Its LEFT JOIN is required, since recovery windows have no `>= 400` rows. It starts at `earliest-offset` so the detector's 30-window (five minute) baseline includes everything sent so far.
+- **The detector emits every window** (`tf/flink/detect_anomalies.sql`): a row per API and failing HTTP status per 10-second window, or one `http_status = 'RECOVERED'` row when nothing failed, with `is_anomaly` saying whether the window was out of bounds. The monitor shows the latest window per API, and the server keeps the last 500 rows for tabs opened later. Its LEFT JOIN is required, since healthy windows have no `>= 400` rows. It starts at `earliest-offset` so the detector's 30-window (five minute) baseline includes everything sent so far.
 - **Access**: nothing but `/healthz` is served without the access token. People reach the app only through CloudFront (VPC origin to an internal ALB), so `launchpad_url` is HTTPS. State changes need the `X-APIDIAG` header. The server applies only the adjustable fields of an API's settings (rate, error percentages, latency, gateway error, dependencies) and bounds them (`maxRate`, `maxLatencyMs`): names and paths are not the browser's to set, and the cluster is billed.
 - **Secrets**: they reach the container only through Secrets Manager. `server.Config` redacts itself in `String`/`LogValue`. The app has no AWS permissions.
 - **One task**: `desired_count = 1` with `deployment_maximum_percent = 100`, so there are never two simulators.
-- **The AI agent is the user's**: the source never recorded one, so none is deployed. Don't invent a prompt and enable it.
+- **The agent's Bedrock credential is made by Terraform and goes nowhere else**: `aws_iam_access_key.flink_llm` → `confluent_flink_connection.bedrock`, the key only allowed to invoke the one model. No literal key in the tree, no output, no Flink statement or Secrets Manager entry carrying it (`contract_test.go` checks). It is in Terraform's state, like the demo's other secrets. The prompt in `tf/flink/ai_agent.sql` is the user's: don't reword it.
+- **`EmitAfterGap` is a committed jar** (`tf/udf/emit-after-gap.jar`) because Launchpad's runner has no Java. Its source is `udf/emit-after-gap/`: after changing it run `udf/emit-after-gap/build.sh` (needs Docker; it tests and builds in a pinned Maven image, reproducibly) and commit the jar. `.github/workflows/automated-api-diagnosis-udf.yml` fails when the jar is not what the source builds. A new jar reaches a running demo only after teardown and a new launch. `ai_reports` reads `api_anomalies`, a table (not a view: a process table function takes a table), made by `create_anomalies.sql`.
 
 ## Conventions
 
