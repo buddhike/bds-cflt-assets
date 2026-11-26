@@ -9,6 +9,10 @@
 # default branch. The Terraform in demos/pims/tf takes the registry and the tag
 # as variables.
 #
+# It runs on every push, not only those that touch the demo: Launchpad deploys the
+# image tagged with the commit it downloaded, which is the head of the demos branch
+# whatever that commit changed.
+#
 # GitHub creates a package as private. Make each one public once (the package's
 # settings, Change visibility), or give Terraform the credentials of a registry
 # secret. Fargate cannot pull a private GHCR image otherwise.
@@ -17,9 +21,6 @@ name: PIMS images
 on:
   push:
     branches: [main, launchpad]
-    paths:
-      - 'demos/pims/**'
-      - '.github/workflows/pims-images.yml'
   workflow_dispatch:
 
 permissions:

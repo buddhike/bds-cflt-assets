@@ -7,6 +7,10 @@
 # branch. The Terraform in demos/automated-api-diagnosis/tf takes the registry and the tag
 # as variables.
 #
+# It runs on every push, not only those that touch the demo: Launchpad deploys the
+# image tagged with the commit it downloaded, which is the head of the demos branch
+# whatever that commit changed.
+#
 # GitHub creates a package as private. Make it public once (the package's settings,
 # Change visibility), or give Terraform the credentials of a registry secret. Fargate
 # cannot pull a private GHCR image otherwise.
@@ -15,9 +19,6 @@ name: Automated API diagnosis image
 on:
   push:
     branches: [main, launchpad]
-    paths:
-      - 'demos/automated-api-diagnosis/**'
-      - '.github/workflows/automated-api-diagnosis-image.yml'
   workflow_dispatch:
 
 permissions:
