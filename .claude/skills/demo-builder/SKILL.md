@@ -1,6 +1,6 @@
 ---
 name: demo-builder
-description: How to build a demo that Launchpad can launch and tear down in this repository. Use when creating a new demo under demos/, converting an existing app into a Launchpad demo, changing a demo's tf/ directory, access gate, shutdown hook or image workflow, or debugging a demo that fails to launch or destroy.
+description: How to build a demo that Launchpad can launch and tear down in this repository. Use when creating a new demo under demos/, converting an existing app into a Launchpad demo, changing a demo's tf/ directory, access gate, shutdown hook, image workflow, or user interface and styling, or debugging a demo that fails to launch or destroy.
 ---
 
 # Building a Launchpad demo
@@ -24,6 +24,7 @@ demos/<id>/
   demo.json         {"name": "...", "description": "...", "tags": [...]}   (optional for Launchpad, but always write it, with tags)
   tf/               Terraform. Required
   cmd/server/ …     the app (Go module, UI embedded in the binary)
+  frontend/         the UI. Follows the visual design (section 10): src/graphite.css is a copy of libs/design/graphite.css
   docker/Dockerfile the image
   docs/specs/launchpad.md   design: what runs where, setup order, shutdown, env contract, access
   CLAUDE.md, README.md
@@ -133,7 +134,7 @@ So:
 ## 6. Build order for a new demo
 
 1. **Design first.** Write `docs/specs/launchpad.md`: diagram of what runs where, setup order, what undoes what at shutdown, the env contract, access, image, regions, known limits. Both existing demos have exactly these sections.
-2. **App**: server with `/healthz`, the access gate, config from env, a `contract_test.go`, then the UI embedded in the binary.
+2. **App**: server with `/healthz`, the access gate, config from env, a `contract_test.go`, then the UI embedded in the binary. Build the UI on the shared design system from the first commit (section 10), not restyled afterwards.
 3. **Dockerfile** and the image workflow. Mind cgo (`confluent-kafka-go` needs a glibc build with `CGO_ENABLED=1`, as in automated-api-diagnosis' Dockerfile) and `.dockerignore` for `tf`, `docs`, `.git`.
 4. **Terraform**: `versions.tf` (providers, `default_tags = var.launchpad_tags`), `variables.tf`, `confluent.tf`, `network.tf`, `cloudfront.tf`, `secrets.tf`, `ecs.tf`, `outputs.tf`. Put a header comment on each file saying what it is for and why.
 5. **Terraform tests** in `tf/tests/*.tftest.hcl` with `mock_provider`s, checking the task definition: secrets are injected, ports and image are right, the service waits for the tables it reads.
@@ -147,6 +148,7 @@ From `demos/<id>` (no cloud account needed for these):
 ```sh
 go vet ./... && go test -race ./...
 (cd frontend && npm ci && npm run build)
+../../libs/design/sync.sh --check && node ../../libs/design/contrast.mjs   # the UI's stylesheet is the shared one
 (cd tf && terraform init -backend=false && terraform validate && terraform test)
 docker build -f docker/Dockerfile -t <id> .
 ```
@@ -168,7 +170,32 @@ Then, to prove it works in the cloud: push, make the image package public (or gi
 
 ## 9. Conventions in this repository
 
-* Commit messages follow the `git-commit-message` skill: `<asset>: <type>(<scope>): <summary>`, where `<asset>` is the demo's directory name (`repo:` for the image workflow and anything outside a demo), and one commit per asset. Scopes the demos use: `server`, `frontend`, `tf`, `docker`.
+* Commit messages follow the `git-commit-message` skill: `<asset>: <type>(<scope>): <summary>`, where `<asset>` is the demo's directory name (`repo:` for the image workflow and anything outside a demo), and one commit per asset. Scopes the demos use: `server`, `frontend`, `tf`, `docker`. A change to the shared stylesheet is `repo: …(design)` and is its own commit, with the copies it syncs going in the apps' commits.
 * Review Go changes with the `go-code-reviewer` agent, and everything with the `security-reviewer` agent before a commit (`.claude/agents/`).
 * Log with slog, sentence-case messages. Never log secrets, tokens or the Launchpad URL.
 * Comments say why, as the existing Terraform does; keep the design doc and `CLAUDE.md` in step with the code in the same change.
+
+## 10. The user interface: follow the visual design
+
+Launchpad and every demo share one look and one set of controls, so that opening a demo from Launchpad feels like the same product. The contract is `demos/launchpad/docs/specs/002_visual_design.md` ("Graphite"); read it before writing any UI. The stylesheet that implements it is `libs/design/graphite.css`. When they disagree about a value, the stylesheet wins and the document gets corrected.
+
+**Set up (any framework: both React and Svelte demos exist):**
+
+1. `npm i @fontsource-variable/ibm-plex-sans @fontsource/ibm-plex-mono`. The stylesheet's `@font-face` rules resolve them; never load fonts from a CDN, since a demo must work offline.
+2. Add the app to `apps` in `libs/design/sync.sh`, run `libs/design/sync.sh`, and commit `frontend/src/graphite.css`. The copy exists because the Docker build context is the demo's directory and cannot see `libs/`. **Never edit the copy**: change `libs/design/graphite.css`, run the sync, and commit both. CI (`design-check.yml`) fails when a copy differs.
+3. `import './graphite.css'` first in the entry file. Your own CSS comes after it and only adds layout.
+4. `<body class="dense">` in `index.html`. Demos are compact; only Launchpad is comfortable.
+5. `<meta name="color-scheme" content="light dark">`. The page follows the OS theme. There is no in-app toggle.
+
+**Rules:**
+
+* **No colour of your own.** No hex, `rgb()`, `rgba()`, `hsl()` or named colour in CSS, in a Svelte `<style>`, in SVG attributes or in JavaScript. Use `var(--text)`, `var(--surface)`, `var(--accent)`, `var(--s1)`…`var(--s5)`, `var(--code-*)`. A chart or editor theme that needs a colour in JS reads it with `getComputedStyle(document.documentElement).getPropertyValue('--s1')` (re-read it on a theme change). Fonts and radii are tokens too (`--font`, `--mono`, `--r-md`).
+* **Use the shared components as they are:** `button` (`.primary`, `.danger`, `.quiet`, `.link`, `.sm`), `.field`, `.pill`, `.tag`, `.notice`, `.card`/`.panel`, `.kpi`, `.health`, `.steps`, `table.data`, `.log`/`.code`, `.statusbar`, `.rail`. Do not redefine a shared class in your CSS; if one is wrong or missing, fix `libs/design/graphite.css` for every app.
+* **The shell is fixed.** The top bar is the shared `.topbar`: the Launchpad mark, `Launchpad / <demo name>`, the tabs, a status `.pill`, the main actions at the right. Do not draw your own logo or header. A demo that can also run outside Launchpad shows the `Launchpad /` prefix only when Launchpad launched it.
+* **Status language.** Green (`.ok`) is running or healthy, the accent (`.busy`, pulses) is in progress, amber (`.warn`) means a person has something to do, red (`.danger`) is failed. Every status is a `.pill` with a word, never a coloured dot alone, and an in-progress word ends in `…`.
+* **Destructive actions** are confirmed inline (the question, a `.danger` button, Cancel), not in a dialog.
+* **Charts** use `--s1`… in order, `--grid` for grid lines and `--text-3` for axes, with a legend and an `aria-label`. Never a status colour for a series that is not a status.
+* **Layout.** The page does not scroll: top bar, workbench of panels that scroll inside themselves, then `.statusbar`. Only tables, code and charts scroll sideways, inside their own box.
+* **Accessible.** Keep the focus outline, use `button` and `a` (not clickable `div`s), give icon-only buttons an `aria-label`, and animate only `.pill.busy` / `.dot.busy`. Colour is never the only signal.
+
+**Check before you commit a UI change:** the review checklist at the end of the visual design document (copy present and in sync, `dense`, shared top bar, no literal colours, pills on every status, chart legends, looks right in light and dark with the keyboard). A quick search for literal colours: `grep -rEn '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(' frontend/src --include='*.css' --include='*.svelte' --include='*.tsx' --include='*.ts' --include='*.js' | grep -v graphite.css` should print nothing except the shared mark.
