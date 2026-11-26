@@ -326,11 +326,18 @@ components only that app has (PIMS's data-flow diagram, a CodeMirror theme). It:
 
 ## Rollout
 
-| App | State |
+All three front ends are on Graphite.
+
+| App | What changed |
 |---|---|
-| Launchpad | Moves to Graphite: new stylesheet, status tones, mark |
-| PIMS | Moves to Graphite: its tokens are renamed to these, charts and editor read them |
-| Automated API diagnosis | Rebuilt on Graphite: it had no design system and was forced dark |
+| Launchpad | New stylesheet and IBM Plex in place of Inter. Underlined tabs, outlined status pills, flat cards. In-progress states use the accent instead of amber, and a card shows "Update available" as a pill |
+| PIMS | Its tokens were renamed to these. It uses the shared top bar, steps, KPI tiles, status bar and notices, and its SQL editor draws on the code tokens |
+| Automated API diagnosis | Had no design system (forced dark navy, Nunito, hard-coded rgba). Rebuilt from the shared cards, health tiles, pills and notices, with a light theme |
+
+The React apps carry copies of `Logo`, `Icon` and `Notice`; the Svelte app has
+`Logo.svelte` and `Notice.svelte`. They are small and carry no colour of their own,
+so a copy cannot drift in look. If a fourth app is added, copy the nearest set.
 
 `.claude/skills/demo-builder/SKILL.md` tells whoever builds a demo to follow this
-document.
+document, and `.github/workflows/design-check.yml` keeps the copies and the
+contrast honest.
