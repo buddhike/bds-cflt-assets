@@ -140,7 +140,9 @@ API.
 
 `.github/workflows/automated-api-diagnosis-image.yml` builds the image and publishes it to
 the GitHub Container Registry as `ghcr.io/<owner>/automated-api-diagnosis`, tagged with the
-commit SHA and `latest`. The package starts private. Make it public once (Package settings
+commit SHA and `latest`, on every push. Launchpad passes the commit it downloaded as
+`launchpad_ref`, which is the image tag, so an update runs the image of that commit (a
+`latest` that never changes would leave the task definition as it was). The package starts private. Make it public once (Package settings
 → Change visibility), or give Terraform `registry_credentials_secret_arn`.
 
 ## Regions

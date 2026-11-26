@@ -35,9 +35,15 @@ variable "image_registry" {
 }
 
 variable "image_tag" {
-  description = "Tag of the image. The workflow publishes latest from the default branch, and a branch name and commit SHA from every push."
+  description = "Tag of the image. Leave it null to deploy the commit Launchpad downloaded the demo at (launchpad_ref), or latest outside Launchpad. The workflow publishes a commit SHA, a branch name and latest."
   type        = string
-  default     = "latest"
+  default     = null
+}
+
+variable "launchpad_ref" {
+  description = "The commit SHA Launchpad downloaded the demo at. Set by Launchpad. It is the image tag, so an update starts the images of its own commit: a tag that never changes (latest) leaves the task definition as it was, and ECS keeps the old task."
+  type        = string
+  default     = ""
 }
 
 variable "registry_credentials_secret_arn" {

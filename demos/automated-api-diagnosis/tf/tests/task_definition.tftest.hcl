@@ -294,6 +294,33 @@ run "bedrock_region_and_model" {
   }
 }
 
+run "image_follows_the_commit" {
+  command = apply
+
+  variables {
+    launchpad_ref = "0123456789abcdef0123456789abcdef01234567"
+  }
+
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.demo.container_definitions)[0].image == "ghcr.io/buddhike/automated-api-diagnosis:0123456789abcdef0123456789abcdef01234567"
+    error_message = "the image is the one of the commit Launchpad downloaded"
+  }
+}
+
+run "image_tag_overrides_the_commit" {
+  command = apply
+
+  variables {
+    launchpad_ref = "0123456789abcdef0123456789abcdef01234567"
+    image_tag     = "main"
+  }
+
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.demo.container_definitions)[0].image == "ghcr.io/buddhike/automated-api-diagnosis:main"
+    error_message = "an explicit image_tag wins"
+  }
+}
+
 run "private_registry" {
   command = apply
 

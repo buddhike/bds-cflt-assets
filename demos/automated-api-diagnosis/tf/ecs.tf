@@ -4,6 +4,7 @@
 data "aws_partition" "current" {}
 
 locals {
+  image_tag  = coalesce(var.image_tag, var.launchpad_ref, "latest")
   secret_arn = aws_secretsmanager_secret.demo.arn
   # A secret's JSON key as a container secret: <arn>:<key>::
   from_secret = { for k in [
@@ -95,7 +96,7 @@ resource "aws_ecs_task_definition" "demo" {
   container_definitions = jsonencode([
     merge({
       name         = "app"
-      image        = "${var.image_registry}/automated-api-diagnosis:${var.image_tag}"
+      image        = "${var.image_registry}/automated-api-diagnosis:${local.image_tag}"
       essential    = true
       portMappings = [{ containerPort = 8080, protocol = "tcp" }]
       environment  = local.app_env
