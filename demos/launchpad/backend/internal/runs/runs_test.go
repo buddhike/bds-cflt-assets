@@ -412,7 +412,7 @@ func TestUpdateLeavesTheDemoAloneWhenTheRepositoryCannotBeRead(t *testing.T) {
 	env.GitHub.Clear()
 	env.Lambda.Clear()
 	_, err := runs.RequestUpdate(ctx, env.Services, "plain", ann)
-	wantAPIError(t, err, 502, "catalog_unavailable")
+	wantAPIError(t, err, 502, "github_not_found") // what GitHub said, not a vaguer word of ours
 	if after := raw(t, env, "plain"); *after != *before || len(env.Lambda.Calls()) != 0 {
 		t.Fatalf("state %+v", after)
 	}
@@ -437,15 +437,77 @@ func TestUpdateIsRefusedForADemoThatLeftTheRepository(t *testing.T) {
 	wantAPIError(t, err, 409, "demo_removed")
 }
 
-func TestARunnerThatCannotStartLeavesAFailedUpdate(t *testing.T) {
+func TestARunnerThatCannotStartLeavesAFailedUpdateAtTheOldCode(t *testing.T) {
 	env := fixture(t)
 	launched(t, env, "plain", ann.Email)
+	before := raw(t, env, "plain")
 	push(env, pushed)
 	env.Lambda.Err = errors.New("no")
 	_, err := runs.RequestUpdate(ctx, env.Services, "plain", ann)
 	wantAPIError(t, err, 502, "runner_unavailable")
-	if st := raw(t, env, "plain"); st.Status != runs.UpdateFailed || st.URL != "http://x" {
+	// Nothing was applied, so the demo, and a teardown of it, are still at the code that was.
+	st := raw(t, env, "plain")
+	if st.Status != runs.UpdateFailed || st.URL != "http://x" || st.Ref != before.Ref || st.Version != before.Version || st.Path != before.Path {
+		t.Fatalf("state %+v, before %+v", st, before)
+	}
+}
+
+func TestAnUpdateRecordsWhatWasAppliedBefore(t *testing.T) {
+	env := fixture(t)
+	launched(t, env, "plain", ann.Email)
+	before := raw(t, env, "plain")
+	push(env, pushed)
+	if _, err := runs.RequestUpdate(ctx, env.Services, "plain", ann); err != nil {
+		t.Fatal(err)
+	}
+	st := raw(t, env, "plain")
+	prev := st.Previous()
+	if prev == nil || prev.Ref != before.Ref || prev.Version != before.Version || prev.Path != before.Path || prev.NeedsConfluent {
+		t.Fatalf("previous %+v, before %+v", prev, before)
+	}
+	if st.Ref == before.Ref || st.Version == before.Version {
 		t.Fatalf("state %+v", st)
+	}
+	if raw(t, env, "plain").Public().Ref == before.Ref {
+		t.Fatal("the demo shows the old commit while it is being updated to the new one")
+	}
+}
+
+// racing is a database that, once, changes a demo's state just before an update of it is written,
+// as a second request that arrives between the update's read and its write would.
+type racing struct {
+	db.DB
+	before func()
+}
+
+func (r *racing) Update(ctx context.Context, pk, sk string, u db.Update, cond db.Cond) (db.Item, error) {
+	if r.before != nil {
+		f := r.before
+		r.before = nil
+		f()
+	}
+	return r.DB.Update(ctx, pk, sk, u, cond)
+}
+
+func TestAnUpdateCannotOverwriteARequestThatWonTheRace(t *testing.T) {
+	env := fixture(t)
+	launched(t, env, "plain", ann.Email)
+	push(env, pushed)
+	inner := env.Services.DB
+	env.Services.DB = &racing{DB: inner, before: func() {
+		// The teardown is requested after the update read the state, and its write goes first.
+		if _, err := runs.RequestTeardown(ctx, env.Services, "plain", ann); err != nil {
+			t.Error(err)
+		}
+	}}
+	env.Lambda.Clear()
+	_, err := runs.RequestUpdate(ctx, env.Services, "plain", ann)
+	wantAPIError(t, err, 409, "not_updatable")
+	if st := raw(t, env, "plain"); st.Status != runs.TearingDown || st.Ref != testenv.SHA {
+		t.Fatalf("state %+v", st)
+	}
+	if n := len(env.Lambda.Calls()); n != 1 { // the teardown's runner, and not the update's
+		t.Fatalf("%d invocations", n)
 	}
 }
 

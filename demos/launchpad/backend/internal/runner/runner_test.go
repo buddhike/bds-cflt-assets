@@ -24,7 +24,7 @@ const fakeTerraform = `#!/bin/bash
 FAKE_LOG=@LOG@; FAKE_LOCK=@LOCK@; FAKE_MODE=@MODE@
 echo "terraform $@" >> "$FAKE_LOG"
 case "$1" in
-  init) exit 0 ;;
+  init) if [ "$FAKE_MODE" = initfail ]; then echo "Error: Unsupported argument"; exit 1; fi; exit 0 ;;
   output) case "$3" in launchpad_shutdown) printf '%s' '@HOOK@' ;; *) printf '%s' '@URL@' ;; esac; exit 0 ;;
   force-unlock) rm -f "$FAKE_LOCK"; exit 0 ;;
   apply|destroy)
@@ -478,5 +478,90 @@ func TestAnUpdateOfADemoThatNeedsConfluentCloudGivesTerraformTheKeyOfTheOwner(t 
 	st := f.state("pims")
 	if st.Status != runs.Running || strings.Contains(st.LogTail, "hunter2") || !strings.Contains(st.LogTail, "key=***") {
 		t.Fatalf("state %+v", st)
+	}
+}
+
+func TestAnUpdateThatFailsBeforeItAppliesAnythingPutsTheDemoBackAtItsOldCode(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	before := f.state("plain")
+	f.install("initfail", "")
+	ev := f.update(t, "plain")
+	if got := f.run(t, ev, 900*time.Second); got != "failed" {
+		t.Fatalf("result %q", got)
+	}
+	st := f.state("plain")
+	if st.Status != runs.UpdateFailed || st.Ref != before.Ref || st.Version != before.Version || st.URL != before.URL {
+		t.Fatalf("state %+v, before %+v", st, before)
+	}
+	if f.called("terraform apply") != 1 { // the launch's, and none for the update
+		t.Fatalf("calls %v", f.calls())
+	}
+
+	// A teardown now destroys with the code that made the demo, not with the broken commit.
+	f.install("ok", "")
+	if _, err := runs.RequestTeardown(ctx, f.Services, "plain", ann); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.state("plain").Ref; got != before.Ref {
+		t.Fatalf("a teardown would use %q", got)
+	}
+}
+
+func TestAnUpdateThatFailsWhileApplyingKeepsTheNewCode(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	f.install("fail", "")
+	ev := f.update(t, "plain")
+	f.run(t, ev, 900*time.Second)
+	// Terraform may have changed some of it, so a teardown has to use the code that was being applied.
+	if st := f.state("plain"); st.Status != runs.UpdateFailed || st.Ref != newSHA {
+		t.Fatalf("state %+v", st)
+	}
+}
+
+func TestAnUpdateThatFailsInALaterSliceBeforeTheApplyKeepsTheNewCode(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	ev := f.update(t, "plain")
+	if got := f.run(t, ev, 100*time.Second); got != "resumed" { // too little time to apply
+		t.Fatalf("result %q", got)
+	}
+	// The next slice cannot know whether the first one applied anything.
+	f.install("initfail", "")
+	ev.Resumes = 1
+	f.run(t, ev, 900*time.Second)
+	if st := f.state("plain"); st.Status != runs.UpdateFailed || st.Ref != newSHA {
+		t.Fatalf("state %+v", st)
+	}
+}
+
+func TestAnUpdateOfADemoThatNowPrintsNoAddressKeepsTheOldOne(t *testing.T) {
+	f := newFixture(t)
+	f.run(t, f.launch(t, "plain"), 900*time.Second)
+	f.install("ok", "")
+	ev := f.update(t, "plain")
+	f.run(t, ev, 900*time.Second)
+	if st := f.state("plain"); st.Status != runs.Running || st.URL != "http://demo.example" {
+		t.Fatalf("state %+v", st)
+	}
+}
+
+func TestAnInvocationForARunThatIsAlreadyOverDoesNothing(t *testing.T) {
+	f := newFixture(t)
+	ev := f.launch(t, "plain")
+	f.run(t, ev, 900*time.Second) // running
+	applies := f.called("terraform apply")
+	// A late delivery of the same run, as after a failed start that was also delivered.
+	for _, status := range []string{runs.Running, runs.LaunchFailed, runs.UpdateFailed, runs.TeardownFailed} {
+		if _, err := runs.Finish(ctx, f.Services, "plain", ev.RunID, status, runs.Outcome{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.run(t, ev, 900*time.Second); got != "stale" {
+			t.Fatalf("a run that is %s answered %q", status, got)
+		}
+	}
+	if f.called("terraform apply") != applies || f.called("terraform destroy") != 0 {
+		t.Fatalf("calls %v", f.calls())
 	}
 }

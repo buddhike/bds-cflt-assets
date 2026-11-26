@@ -55,11 +55,36 @@ type State struct {
 	NeedsConfluent bool   `dynamodbav:"needsConfluent"`
 	LaunchedBy     string `dynamodbav:"launchedBy"`
 	CredsOwner     string `dynamodbav:"credsOwner"`
-	Resumes        int64  `dynamodbav:"resumes"`
-	UpdatedAt      int64  `dynamodbav:"updatedAt"`
-	URL            string `dynamodbav:"url,omitempty"`
-	Error          string `dynamodbav:"error,omitempty"`
-	LogTail        string `dynamodbav:"logTail,omitempty"`
+	// What was applied before an update began. Nothing of it is lost until the update starts to apply.
+	PrevRef            string `dynamodbav:"prevRef,omitempty"`
+	PrevVersion        string `dynamodbav:"prevVersion,omitempty"`
+	PrevPath           string `dynamodbav:"prevPath,omitempty"`
+	PrevNeedsConfluent bool   `dynamodbav:"prevNeedsConfluent,omitempty"`
+	Resumes            int64  `dynamodbav:"resumes"`
+	UpdatedAt          int64  `dynamodbav:"updatedAt"`
+	URL                string `dynamodbav:"url,omitempty"`
+	Error              string `dynamodbav:"error,omitempty"`
+	LogTail            string `dynamodbav:"logTail,omitempty"`
+}
+
+// Applied is the code a demo was last applied at.
+type Applied struct {
+	Ref, Version, Path string
+	NeedsConfluent     bool
+}
+
+// Applied is the code the state records now.
+func (s *State) applied() *Applied {
+	return &Applied{Ref: s.Ref, Version: s.Version, Path: s.Path, NeedsConfluent: s.NeedsConfluent}
+}
+
+// Previous is the code the demo was at before the update that is running or failed, or nil
+// if there is none.
+func (s *State) Previous() *Applied {
+	if s.PrevRef == "" {
+		return nil
+	}
+	return &Applied{Ref: s.PrevRef, Version: s.PrevVersion, Path: s.PrevPath, NeedsConfluent: s.PrevNeedsConfluent}
 }
 
 // Public is what the API shows of a State.
@@ -176,7 +201,7 @@ func RequestLaunch(ctx context.Context, svc *services.Services, demoID, email st
 		return nil, err
 	}
 	svc.Metrics.Count("DemoLaunchRequested", "demo", demoID)
-	if err := start(ctx, svc, demoID, runID, LaunchFailed, ""); err != nil {
+	if err := start(ctx, svc, demoID, runID, LaunchFailed, Outcome{}); err != nil {
 		return nil, err
 	}
 	current, err := GetRaw(ctx, svc, demoID)
@@ -223,7 +248,7 @@ func RequestTeardown(ctx context.Context, svc *services.Services, demoID string,
 		return nil, err
 	}
 	svc.Metrics.Count("DemoTeardownRequested", "demo", demoID)
-	if err := start(ctx, svc, demoID, runID, TeardownFailed, ""); err != nil {
+	if err := start(ctx, svc, demoID, runID, TeardownFailed, Outcome{}); err != nil {
 		return nil, err
 	}
 	current, err := GetRaw(ctx, svc, demoID)
@@ -269,8 +294,9 @@ func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, u
 	}
 
 	if _, err := catalog.List(ctx, svc, true); err != nil {
+		// GitHub's own failures say what went wrong, and anything else is a 500 that says nothing.
 		svc.Log.Error("Could not read the repository for an update", "demo", demoID, "error", err)
-		return nil, apperr.New(502, "catalog_unavailable", "The repository could not be read. Try again")
+		return nil, err
 	}
 	demo, err := catalog.Get(ctx, svc, demoID)
 	if err != nil {
@@ -303,6 +329,7 @@ func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, u
 	_, err = svc.DB.Update(ctx, key(demoID), "STATE", db.Update{Set: map[string]any{
 		"status": Updating, "action": Apply, "runId": runID, "ref": demo.Ref, "version": demo.Version, "path": demo.Path,
 		"needsConfluent": needsConfluent, "credsOwner": owner, "resumes": 0,
+		"prevRef": state.Ref, "prevVersion": state.Version, "prevPath": state.Path, "prevNeedsConfluent": state.NeedsConfluent,
 		"updatedAt": svc.Now(), "error": "", "logTail": "",
 	}}, db.And(
 		db.Equal("runId", state.RunID),
@@ -316,22 +343,24 @@ func RequestUpdate(ctx context.Context, svc *services.Services, demoID string, u
 		return nil, err
 	}
 	svc.Metrics.Count("DemoUpdateRequested", "demo", demoID)
-	if err := start(ctx, svc, demoID, runID, UpdateFailed, state.URL); err != nil {
+	// If the runner cannot start, nothing was applied, so the demo is still at the code it was at.
+	if err := start(ctx, svc, demoID, runID, UpdateFailed, Outcome{URL: state.URL, Restore: state.applied()}); err != nil {
 		return nil, err
 	}
 	current, err := GetRaw(ctx, svc, demoID)
 	return current.Public(), err
 }
 
-// start invokes the runner. If it cannot, the run ends in failedStatus, keeping the address the demo had.
-func start(ctx context.Context, svc *services.Services, demoID, runID, failedStatus, url string) error {
+// start invokes the runner. If it cannot, the run ends in failedStatus with the outcome given and an error.
+func start(ctx context.Context, svc *services.Services, demoID, runID, failedStatus string, outcome Outcome) error {
 	err := invoke(ctx, svc, demoID, runID, 0)
 	if err == nil {
 		return nil
 	}
 	// The runner could not even be started.
 	svc.Log.Error("Could not start the runner", "demo", demoID, "error", err)
-	if _, finishErr := Finish(ctx, svc, demoID, runID, failedStatus, Outcome{URL: url, Error: fmt.Sprintf("Could not start the runner: %T", err)}); finishErr != nil {
+	outcome.Error = fmt.Sprintf("Could not start the runner: %T", err)
+	if _, finishErr := Finish(ctx, svc, demoID, runID, failedStatus, outcome); finishErr != nil {
 		svc.Log.Error("Could not record that the runner did not start", "demo", demoID, "error", finishErr)
 	}
 	return apperr.New(502, "runner_unavailable", "The deployment worker could not be started. Try again")
@@ -357,6 +386,9 @@ type Outcome struct {
 	URL   string
 	Error string
 	Tail  *string // nil leaves the log as it is
+	// Restore puts the state back at this code. It is for an update that failed before it applied
+	// anything, so that the demo, and a teardown of it, are still at what was applied.
+	Restore *Applied
 }
 
 // Finish ends a run with a status. False means this run is no longer the current one.
@@ -364,6 +396,9 @@ func Finish(ctx context.Context, svc *services.Services, demoID, runID, status s
 	set := map[string]any{"status": status, "url": outcome.URL, "error": outcome.Error, "updatedAt": svc.Now()}
 	if outcome.Tail != nil {
 		set["logTail"] = *outcome.Tail
+	}
+	if r := outcome.Restore; r != nil {
+		set["ref"], set["version"], set["path"], set["needsConfluent"] = r.Ref, r.Version, r.Path, r.NeedsConfluent
 	}
 	_, err := svc.DB.Update(ctx, key(demoID), "STATE", db.Update{Set: set}, db.Equal("runId", runID))
 	return applied(err)

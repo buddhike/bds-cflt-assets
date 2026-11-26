@@ -164,6 +164,7 @@ func (r *Runner) Run(ctx context.Context, ev Event, remaining func() time.Durati
 	a := &slice{Runner: r, ev: ev, state: state, remaining: remaining, started: time.Now(), tail: terraform.NewLogTail()}
 	a.destroy = state.Action == runs.Destroy
 	a.update = state.Status == runs.Updating
+	a.mayHaveApplied = ev.Resumes > 0 // an earlier slice may have got as far as the apply
 	a.verb, a.failedStatus, a.failedMetric = "apply", runs.LaunchFailed, "DemoLaunchFailed"
 	a.doneMetric = "DemoLaunchSucceeded"
 	if a.update {
@@ -187,6 +188,11 @@ func (r *Runner) Run(ctx context.Context, ev Event, remaining func() time.Durati
 	if a.update {
 		// The demo is probably still there, so keep the address it had.
 		outcome.URL = state.URL
+		if !a.mayHaveApplied {
+			// Nothing was changed, so the demo is still at the code it was at. A broken commit
+			// must not become the code a teardown tries to use.
+			outcome.Restore = state.Previous()
+		}
 	}
 	if _, ferr := runs.Finish(ctx, svc, ev.DemoID, ev.RunID, a.failedStatus, outcome); ferr != nil {
 		return "", ferr
@@ -204,12 +210,14 @@ type slice struct {
 	started   time.Time
 	tail      *terraform.LogTail // replaced by one that hides the credentials, once they are loaded
 
-	destroy      bool
-	update       bool   // an apply of a newer commit to a demo that was running
-	doneMetric   string // counted when an apply succeeds
-	verb         string // the Terraform command
-	failedStatus string
-	failedMetric string
+	destroy    bool
+	update     bool   // an apply of a newer commit to a demo that was running
+	doneMetric string // counted when an apply succeeds
+	// mayHaveApplied is whether Terraform has, or may have, changed what the demo made.
+	mayHaveApplied bool
+	verb           string // the Terraform command
+	failedStatus   string
+	failedMetric   string
 }
 
 // do the work of the slice. Any error it returns fails the run.
@@ -304,6 +312,7 @@ func (a *slice) do(ctx context.Context) (string, error) {
 	deadline := time.Now().Add(budget)
 
 	args := []string{a.verb, "-auto-approve", "-input=false", "-lock-timeout=60s"}
+	a.mayHaveApplied = true
 	result, err := tf.Run(ctx, deadline, args...)
 	if err != nil {
 		return "", err
@@ -332,6 +341,10 @@ func (a *slice) do(ctx context.Context) (string, error) {
 	if !a.destroy {
 		if url, err = readURL(ctx, tf, creds); err != nil {
 			return "", err
+		}
+		if url == "" && a.update {
+			// A demo that prints no address after an update still has the one it had.
+			url = state.URL
 		}
 		if url != "" {
 			log.Add(url)

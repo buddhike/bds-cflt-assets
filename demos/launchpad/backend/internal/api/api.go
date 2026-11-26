@@ -278,7 +278,7 @@ type stateView struct {
 	CanTearDown bool    `json:"canTearDown"`
 	// CanUpdate is whether the user may update the demo. It is who may tear it down.
 	CanUpdate bool `json:"canUpdate"`
-	// UpdateAvailable is whether a running demo is at an older commit than the catalog's.
+	// UpdateAvailable is whether a running demo, or one whose update failed, is behind the catalog.
 	UpdateAvailable bool `json:"updateAvailable"`
 }
 
@@ -309,7 +309,7 @@ func newDemoView(user *users.User, demo catalog.Demo, state *runs.Public, withLo
 			CanTearDown: user.Role == users.Admin || user.Email == state.LaunchedBy,
 		}
 		view.State.CanUpdate = view.State.CanTearDown
-		view.State.UpdateAvailable = state.Status == runs.Running && demo.Valid && runs.Behind(state.Version, state.Ref, &demo)
+		view.State.UpdateAvailable = (state.Status == runs.Running || state.Status == runs.UpdateFailed) && demo.Valid && runs.Behind(state.Version, state.Ref, &demo)
 		if withLog {
 			view.State.LogTail = &state.LogTail
 		}
