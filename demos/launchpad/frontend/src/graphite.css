@@ -117,6 +117,8 @@
   --code-muted: #5f625b;
   --code-keyword: #1556ad;
   --code-type: #7a3fb0;
+  --code-builtin: #0b6e80;
+  --code-ident: #8a5a00;
   --code-string: #086a31;
   --code-number: #a8420f;
   --code-warn: #8a5a00;
@@ -154,6 +156,8 @@
     --code-muted: #96958c;
     --code-keyword: #6aa7f0;
     --code-type: #c39ae8;
+    --code-builtin: #5ccfe6;
+    --code-ident: #f2c46b;
     --code-string: #6fd39a;
     --code-number: #f0a070;
     --code-warn: #f2c46b;
@@ -190,6 +194,8 @@
   --code-muted: #96958c;
   --code-keyword: #6aa7f0;
   --code-type: #c39ae8;
+  --code-builtin: #5ccfe6;
+  --code-ident: #f2c46b;
   --code-string: #6fd39a;
   --code-number: #f0a070;
   --code-warn: #f2c46b;
@@ -451,6 +457,8 @@ table.data .r { text-align: right; font-variant-numeric: tabular-nums; }
 .log-error .log-level, .log-error .log-text { color: var(--code-error); }
 .code .k { color: var(--code-keyword); font-weight: 500; }
 .code .t { color: var(--code-type); }
+.code .b { color: var(--code-builtin); }
+.code .i { color: var(--code-ident); }
 .code .s { color: var(--code-string); }
 .code .n { color: var(--code-number); }
 .code .c { color: var(--code-muted); font-style: italic; }
