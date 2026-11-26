@@ -204,7 +204,8 @@ per app.
 | Chart | `.chart` around an SVG, `.legend`, `.swatch` | See [Data visualisation](#data-visualisation) |
 | Code | `.code`, `.log` | Mono, from the code tokens |
 | Status bar | `.statusbar` with `.dot`, `.meter` | The bottom edge of a workbench |
-| Rail | `.rail` of `button`s | A vertical switcher for a workbench's panels |
+| Rail | `.rail` of `button`s, `aria-current="true"` on the open one | A vertical switcher for a workbench's panels. `.badge-count` (+ `.warn`) counts what needs attention |
+| Spacer | `.spacer` | Pushes what follows it to the far end of a flex row |
 
 ### Inline confirmation
 
