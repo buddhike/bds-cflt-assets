@@ -31,6 +31,10 @@ func TestQuery(t *testing.T) {
 		user, pass, _ = r.BasicAuth()
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(status)
+		if status == 400 {
+			_, _ = w.Write([]byte(`{"errors":[{"code":"bad_request","detail":"statement too long"}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"result":{"data":[["a"],["b"]]}}`))
 	}))
 	defer srv.Close()
@@ -51,6 +55,10 @@ func TestQuery(t *testing.T) {
 	status = 500
 	if _, err := q.Query(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "500") {
 		t.Errorf("500: %v", err)
+	}
+	status = 400
+	if _, err := q.Query(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "bad_request: statement too long") {
+		t.Errorf("a 400 names what Confluent said: %v", err)
 	}
 }
 

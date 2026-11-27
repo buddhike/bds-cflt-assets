@@ -151,7 +151,7 @@ func (q *Querier) Query(ctx context.Context, sql string) (rows int, err error) {
 	case http.StatusNotFound:
 		return 0, ErrNotFound
 	default:
-		return 0, &StatusError{Status: resp.StatusCode}
+		return 0, &StatusError{Status: resp.StatusCode, Detail: errorDetail(raw)}
 	}
 	var out struct {
 		Result struct {

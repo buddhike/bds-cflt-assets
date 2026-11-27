@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sort"
@@ -60,6 +61,10 @@ type Querier struct {
 	wg       sync.WaitGroup
 	stats    map[string]*scenarioStats
 	outcomes [numOutcomes]atomic.Int64
+	// sample is the latest HTTP error answer, for the log: what Confluent said, which
+	// scenario and how long the statement was. Confluent may quote a fragment of the
+	// statement back (at most maxDetail characters), which holds only catalogue ids.
+	sample atomic.Pointer[string]
 	// droppedSecs counts latency seconds lost for good: the backlog was full.
 	droppedSecs atomic.Int64
 	pubMu       sync.Mutex              // serialises flushOnce, which owns backlog
@@ -188,7 +193,12 @@ func (q *Querier) run(ctx context.Context, scenario, sql string) {
 			return // shutting down, not a failed query
 		}
 		st.errs.Add(1)
-		q.outcomes[Classify(err)].Add(1)
+		o := Classify(err)
+		q.outcomes[o].Add(1)
+		if o == OutcomeClientError || o == OutcomeServerError || o == OutcomeOther {
+			m := fmt.Sprintf("%s, statement of %d bytes: %v", scenario, len(sql), err)
+			q.sample.Store(&m)
+		}
 		q.Rec.Error(scenario, end)
 		return
 	}
@@ -216,6 +226,9 @@ func (q *Querier) outcomeLoop(ctx context.Context) {
 			}
 		}
 		if len(attrs) > 0 {
+			if m := q.sample.Swap(nil); m != nil {
+				attrs = append(attrs, "sample", *m)
+			}
 			slog.Warn("Queries failed in the last interval", append(attrs, "interval", outcomeLogEvery.String())...)
 		}
 	}
