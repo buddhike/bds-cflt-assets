@@ -1,0 +1,16 @@
+**/node_modules
+frontend/dist
+build
+tf
+docs
+.git
+*.md
+.env*
+*.tfvars
+*.tfstate*
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*tfplan*

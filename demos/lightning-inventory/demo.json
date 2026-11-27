@@ -1,0 +1,8 @@
+{
+  "name": "Lightning inventory",
+  "description": "Stream retail inventory positions into Confluent Cloud and query them by SKU or by location set through a Lightning Table, with live latency graphs (p50, p95, p99 per second) for every query scenario.",
+  "tags": [
+    "Apache Kafka",
+    "Lightning Tables"
+  ]
+}

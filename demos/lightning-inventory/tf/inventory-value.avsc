@@ -1,0 +1,10 @@
+{
+  "type": "record",
+  "name": "InventoryPosition",
+  "namespace": "lightning.inventory",
+  "fields": [
+    {"name": "sku", "type": "string"},
+    {"name": "location_id", "type": "string"},
+    {"name": "quantity", "type": "int"}
+  ]
+}

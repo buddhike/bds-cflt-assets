@@ -1,0 +1,7 @@
+/*
+ * This app's own page frame. Colour, type and every shared component come from
+ * graphite.css, a copy of libs/design/graphite.css (see
+ * demos/launchpad/docs/specs/002_visual_design.md). Nothing here may set a colour.
+ */
+html, body { height: 100%; }
+#app { height: 100vh; }
