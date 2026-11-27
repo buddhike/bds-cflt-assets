@@ -38,7 +38,7 @@ last two scale out on CPU (up to 4 and 8 tasks) and split the rate you set betwe
 
 Terraform creates the table (`confluent_rtce_topic`) and removes it on destroy, so there is no
 Launchpad shutdown hook. The control task only reads the table's status, to show it and to keep
-the loads off until it is active. Four Confluent service accounts keep each task to what it
+the loads off until it is active. Five Confluent service accounts keep each task to what it
 uses (see the design doc, "Confluent permissions").
 
 ## The image

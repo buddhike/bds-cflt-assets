@@ -33,6 +33,8 @@ resource "aws_secretsmanager_secret_version" "demo" {
     KAFKA_API_SECRET  = confluent_api_key.producer_kafka.secret
     GLOBAL_API_KEY    = confluent_api_key.query_global.id
     GLOBAL_API_SECRET = confluent_api_key.query_global.secret
+    STATUS_API_KEY    = confluent_api_key.status_global.id
+    STATUS_API_SECRET = confluent_api_key.status_global.secret
     CLOUD_API_KEY     = confluent_api_key.control_cloud.id
     CLOUD_API_SECRET  = confluent_api_key.control_cloud.secret
   })

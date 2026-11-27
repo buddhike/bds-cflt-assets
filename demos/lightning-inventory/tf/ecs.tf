@@ -22,7 +22,8 @@ locals {
   # A secret's JSON key as a container secret: <arn>:<key>::
   from_secret = { for k in [
     "ACCESS_TOKEN", "WORKER_TOKEN", "KAFKA_API_KEY", "KAFKA_API_SECRET",
-    "GLOBAL_API_KEY", "GLOBAL_API_SECRET", "CLOUD_API_KEY", "CLOUD_API_SECRET",
+    "GLOBAL_API_KEY", "GLOBAL_API_SECRET", "STATUS_API_KEY", "STATUS_API_SECRET",
+    "CLOUD_API_KEY", "CLOUD_API_SECRET",
   ] : k => "${local.secret_arn}:${k}::" }
 
   # A private package needs the registry's credentials.
@@ -44,6 +45,8 @@ locals {
   control_secrets = [
     { name = "LIGHTNING_ACCESS_TOKEN", valueFrom = local.from_secret["ACCESS_TOKEN"] },
     { name = "LIGHTNING_WORKER_TOKEN", valueFrom = local.from_secret["WORKER_TOKEN"] },
+    { name = "LIGHTNING_STATUS_API_KEY", valueFrom = local.from_secret["STATUS_API_KEY"] },
+    { name = "LIGHTNING_STATUS_API_SECRET", valueFrom = local.from_secret["STATUS_API_SECRET"] },
     { name = "LIGHTNING_CLOUD_API_KEY", valueFrom = local.from_secret["CLOUD_API_KEY"] },
     { name = "LIGHTNING_CLOUD_API_SECRET", valueFrom = local.from_secret["CLOUD_API_SECRET"] },
   ]

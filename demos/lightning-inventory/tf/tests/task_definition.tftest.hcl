@@ -120,6 +120,11 @@ override_resource {
 }
 
 override_resource {
+  target = confluent_service_account.status
+  values = { id = "sa-status", api_version = "iam/v2", kind = "ServiceAccount" }
+}
+
+override_resource {
   target = confluent_service_account.control
   values = { id = "sa-control", api_version = "iam/v2", kind = "ServiceAccount" }
 }
@@ -181,8 +186,8 @@ run "task_definitions" {
   }
 
   assert {
-    condition     = toset([for s in jsondecode(aws_ecs_task_definition.role["control"].container_definitions)[0].secrets : s.name]) == toset(["LIGHTNING_ACCESS_TOKEN", "LIGHTNING_WORKER_TOKEN", "LIGHTNING_CLOUD_API_KEY", "LIGHTNING_CLOUD_API_SECRET"])
-    error_message = "the control task holds the two tokens and the read-only Cloud key, no Global or Kafka key"
+    condition     = toset([for s in jsondecode(aws_ecs_task_definition.role["control"].container_definitions)[0].secrets : s.name]) == toset(["LIGHTNING_ACCESS_TOKEN", "LIGHTNING_WORKER_TOKEN", "LIGHTNING_STATUS_API_KEY", "LIGHTNING_STATUS_API_SECRET", "LIGHTNING_CLOUD_API_KEY", "LIGHTNING_CLOUD_API_SECRET"])
+    error_message = "the control task holds the two tokens, the read-only status key and the read-only Cloud key, no query Global or Kafka key"
   }
 
   assert {
@@ -293,6 +298,11 @@ run "topic_and_schema" {
   }
 
   assert {
+    condition     = confluent_api_key.status_global.managed_resource[0].id == "global" && confluent_api_key.status_global.managed_resource[0].kind == "Global"
+    error_message = "the table's status is read with a Global API key"
+  }
+
+  assert {
     condition     = length(confluent_api_key.control_cloud.managed_resource) == 0 && length(confluent_api_key.producer_kafka.managed_resource) == 1
     error_message = "the control key is a Cloud key (no managed resource); the producers' is a cluster key"
   }
@@ -322,7 +332,7 @@ run "service_accounts_are_split" {
   }
 
   assert {
-    condition     = alltrue([for b in [confluent_role_binding.producer_write, confluent_role_binding.query_read, confluent_role_binding.query_schema_read, confluent_role_binding.control_cluster_read, confluent_role_binding.control_metrics] : !contains(["EnvironmentAdmin", "CloudClusterAdmin", "OrganizationAdmin", "ResourceOwner"], b.role_name)])
+    condition     = alltrue([for b in [confluent_role_binding.producer_write, confluent_role_binding.query_read, confluent_role_binding.query_schema_read, confluent_role_binding.status_topic_read, confluent_role_binding.control_metrics] : !contains(["EnvironmentAdmin", "CloudClusterAdmin", "OrganizationAdmin", "ResourceOwner"], b.role_name)])
     error_message = "no task's service account may hold an administrator role"
   }
 
@@ -337,12 +347,12 @@ run "service_accounts_are_split" {
   }
 
   assert {
-    condition     = confluent_role_binding.control_cluster_read.principal == "User:sa-control" && confluent_role_binding.control_cluster_read.role_name == "DeveloperRead" && endswith(confluent_role_binding.control_cluster_read.crn_pattern, "/topic=*") && confluent_role_binding.control_metrics.principal == "User:sa-control" && confluent_role_binding.control_metrics.role_name == "MetricsViewer" && confluent_role_binding.control_metrics.crn_pattern == confluent_kafka_cluster.demo.rbac_crn
-    error_message = "the control task reads the topic's table status and the cluster's metrics, and changes nothing"
+    condition     = confluent_role_binding.status_topic_read.principal == "User:sa-status" && confluent_role_binding.status_topic_read.role_name == "DeveloperRead" && endswith(confluent_role_binding.status_topic_read.crn_pattern, "/topic=inventory_positions") && confluent_role_binding.control_metrics.principal == "User:sa-control" && confluent_role_binding.control_metrics.role_name == "MetricsViewer" && confluent_role_binding.control_metrics.crn_pattern == confluent_kafka_cluster.demo.rbac_crn
+    error_message = "the status account reads the topic's table status, the control account the cluster's metrics, and neither changes anything"
   }
 
   assert {
-    condition     = confluent_api_key.producer_kafka.owner[0].id == "sa-producer" && confluent_api_key.query_global.owner[0].id == "sa-query" && confluent_api_key.control_cloud.owner[0].id == "sa-control" && confluent_api_key.provisioner_kafka.owner[0].id == "sa-provisioner" && confluent_api_key.provisioner_schema_registry.owner[0].id == "sa-provisioner"
+    condition     = confluent_api_key.producer_kafka.owner[0].id == "sa-producer" && confluent_api_key.query_global.owner[0].id == "sa-query" && confluent_api_key.status_global.owner[0].id == "sa-status" && confluent_api_key.control_cloud.owner[0].id == "sa-control" && confluent_api_key.provisioner_kafka.owner[0].id == "sa-provisioner" && confluent_api_key.provisioner_schema_registry.owner[0].id == "sa-provisioner"
     error_message = "each key belongs to its own service account"
   }
 }

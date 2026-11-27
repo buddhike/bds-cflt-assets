@@ -85,7 +85,7 @@ func runControl(ctx context.Context, cfg config.Config) error {
 	svc := server.New(server.Options{
 		DemoName: cfg.DemoName, Region: cfg.AWSRegion, Topic: cfg.Topic, Namespace: cfg.MetricsNamespace,
 		AccessToken: cfg.AccessToken, WorkerToken: cfg.WorkerToken,
-		Tables:  lightning.NewTables(cfg.EnvironmentID, cfg.KafkaClusterID, cfg.Topic, lightning.Auth{Key: cfg.CloudAPIKey, Secret: cfg.CloudAPISecret}, hc),
+		Tables:  lightning.NewTables(cfg.EnvironmentID, cfg.KafkaClusterID, cfg.Topic, lightning.Auth{Key: cfg.StatusAPIKey, Secret: cfg.StatusAPISecret}, hc),
 		Latency: &cw.Reader{API: cloudwatch.NewFromConfig(awsCfg), Namespace: cfg.MetricsNamespace},
 		Usage:   confluentmetrics.New(cfg.CloudAPIKey, cfg.CloudAPISecret, cfg.KafkaClusterID, cfg.Topic, hc),
 	})

@@ -61,8 +61,12 @@ type Config struct {
 	GlobalAPIKey    string
 	GlobalAPISecret string
 
-	// CloudAPIKey is the control task's key: Confluent's usage metrics and the table's
-	// status, read-only.
+	// StatusAPIKey is the control task's Global key for the table's status. It is
+	// read-only (DeveloperRead on the topic).
+	StatusAPIKey    string
+	StatusAPISecret string
+
+	// CloudAPIKey is the control task's Cloud key: Confluent's usage metrics, read-only.
 	CloudAPIKey    string
 	CloudAPISecret string
 }
@@ -166,6 +170,9 @@ func Load(getenv func(string) string) (Config, error) {
 
 		GlobalAPIKey:    req("LIGHTNING_GLOBAL_API_KEY", RoleQuery),
 		GlobalAPISecret: req("LIGHTNING_GLOBAL_API_SECRET", RoleQuery),
+
+		StatusAPIKey:    req("LIGHTNING_STATUS_API_KEY", RoleControl),
+		StatusAPISecret: req("LIGHTNING_STATUS_API_SECRET", RoleControl),
 
 		CloudAPIKey:    req("LIGHTNING_CLOUD_API_KEY", RoleControl),
 		CloudAPISecret: req("LIGHTNING_CLOUD_API_SECRET", RoleControl),

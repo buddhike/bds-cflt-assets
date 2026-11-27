@@ -50,7 +50,7 @@ data "confluent_schema_registry_cluster" "demo" {
   depends_on = [confluent_kafka_cluster.demo]
 }
 
-# Four service accounts, so that no task holds more than it uses. All are scoped to this
+# Five service accounts, so that no task holds more than it uses. All are scoped to this
 # demo's environment, which holds nothing else.
 #
 #   provisioner  creates the topic and the schema. Its keys are used by Terraform only: they
@@ -58,8 +58,10 @@ data "confluent_schema_registry_cluster" "demo" {
 #                one broad role, and it is accepted (docs/specs/launchpad.md, "Accepted risks").
 #   producer     DeveloperWrite on the topic.
 #   query        DeveloperRead on the topic and on Schema Registry.
-#   control      MetricsViewer and DeveloperRead on the cluster: it reads the
-#                table's status and Confluent's usage metrics, and changes nothing.
+#   control      MetricsViewer on the cluster: it reads Confluent's usage metrics and
+#                changes nothing.
+#   status       DeveloperRead on the topic: the control task reads the table's status
+#                with its Global key, and changes nothing.
 #
 # The Lightning Table itself is created by the provider's own credentials (the launching
 # user's Cloud API key), not by any of these.
@@ -81,6 +83,11 @@ resource "confluent_service_account" "query" {
 resource "confluent_service_account" "control" {
   display_name = "${local.name}-control-${confluent_environment.demo.id}"
   description  = "Lightning inventory demo: the control task, read-only"
+}
+
+resource "confluent_service_account" "status" {
+  display_name = "${local.name}-status-${confluent_environment.demo.id}"
+  description  = "Lightning inventory demo: the control task reading the table's status, read-only"
 }
 
 resource "confluent_role_binding" "provisioner" {
@@ -114,15 +121,13 @@ resource "confluent_role_binding" "query_schema_read" {
   crn_pattern = "${data.confluent_schema_registry_cluster.demo.resource_name}/subject=*"
 }
 
-# Reading a table's status (GET /rtce/v1/rtce-topics/...) answered 403 with DeveloperRead on
-# the topic. The Lightning Tables access-control page lists DeveloperRead at cluster scope,
-# not topic scope, for "Get metadata". DeveloperRead needs a resource pattern (the bare
-# cluster CRN is refused with 400), so this is every topic of the cluster, which holds only
-# the demo's topic.
-resource "confluent_role_binding" "control_cluster_read" {
-  principal   = "User:${confluent_service_account.control.id}"
+# The table's status (GET /rtce/v1/rtce-topics/...) is read with a Global key of this account:
+# a Cloud key with DeveloperRead on the topic, or on the topic pattern of the cluster, was
+# refused with 403.
+resource "confluent_role_binding" "status_topic_read" {
+  principal   = "User:${confluent_service_account.status.id}"
   role_name   = "DeveloperRead"
-  crn_pattern = "${confluent_kafka_cluster.demo.rbac_crn}/kafka=${confluent_kafka_cluster.demo.id}/topic=*"
+  crn_pattern = local.topic_crn
 }
 
 # The control task reads Confluent's usage metrics for the table with this role, on the
@@ -226,11 +231,32 @@ resource "confluent_api_key" "query_global" {
   depends_on = [confluent_role_binding.query_read, confluent_role_binding.query_schema_read]
 }
 
-# A Cloud API key, for the Metrics API (which takes no other kind) and for reading the
-# table's status. It has the roles of the control service account, which change nothing.
+# A Global API key to read the table's status, which the Cloud key was refused. It grants
+# nothing by itself: it has the roles of the status service account, which are read-only.
+resource "confluent_api_key" "status_global" {
+  display_name = "${local.name}-status-global"
+  description  = "The control task reading the table's status"
+
+  owner {
+    id          = confluent_service_account.status.id
+    api_version = confluent_service_account.status.api_version
+    kind        = confluent_service_account.status.kind
+  }
+
+  managed_resource {
+    id          = "global"
+    api_version = "global/v1"
+    kind        = "Global"
+  }
+
+  depends_on = [confluent_role_binding.status_topic_read]
+}
+
+# A Cloud API key, for the Metrics API (which takes no other kind). It has the roles of the
+# control service account, which change nothing.
 resource "confluent_api_key" "control_cloud" {
   display_name = "${local.name}-control-cloud"
-  description  = "The control task reading the table's status and Confluent's usage metrics"
+  description  = "The control task reading Confluent's usage metrics"
 
   owner {
     id          = confluent_service_account.control.id
@@ -238,7 +264,7 @@ resource "confluent_api_key" "control_cloud" {
     kind        = confluent_service_account.control.kind
   }
 
-  depends_on = [confluent_role_binding.control_metrics, confluent_role_binding.control_cluster_read]
+  depends_on = [confluent_role_binding.control_metrics]
 }
 
 # A key is not always usable the moment its create call returns. Using it at once, to
@@ -252,7 +278,7 @@ resource "time_sleep" "wait_for_provisioner_keys" {
 # The same wait for the keys the tasks use, which are created after the topic (their roles
 # are scoped to it). The control and worker services start after it.
 resource "time_sleep" "wait_for_app_keys" {
-  depends_on      = [confluent_api_key.producer_kafka, confluent_api_key.query_global, confluent_api_key.control_cloud]
+  depends_on      = [confluent_api_key.producer_kafka, confluent_api_key.query_global, confluent_api_key.status_global, confluent_api_key.control_cloud]
   create_duration = "30s"
 }
 

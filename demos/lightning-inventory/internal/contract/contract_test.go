@@ -343,7 +343,7 @@ func TestNoTaskHoldsAnAdministratorKey(t *testing.T) {
 		}
 	}
 	// each key belongs to the account of its role
-	for key, sa := range map[string]string{"producer_kafka": "producer", "query_global": "query", "control_cloud": "control"} {
+	for key, sa := range map[string]string{"producer_kafka": "producer", "query_global": "query", "status_global": "status", "control_cloud": "control"} {
 		blk := regexp.MustCompile(`(?s)resource "confluent_api_key" "` + key + `" \{.*?\n}\n`).FindString(conf)
 		if !strings.Contains(blk, "confluent_service_account."+sa+".id") {
 			t.Errorf("the %s key is not owned by the %s service account", key, sa)
@@ -351,11 +351,11 @@ func TestNoTaskHoldsAnAdministratorKey(t *testing.T) {
 	}
 	// what each account may do
 	for binding, want := range map[string]string{
-		"producer_write":     `"DeveloperWrite"`,
-		"query_read":         `"DeveloperRead"`,
-		"query_schema_read":  `"DeveloperRead"`,
-		"control_cluster_read": `"DeveloperRead"`,
-		"control_metrics":    `"MetricsViewer"`,
+		"producer_write":    `"DeveloperWrite"`,
+		"query_read":        `"DeveloperRead"`,
+		"query_schema_read": `"DeveloperRead"`,
+		"status_topic_read": `"DeveloperRead"`,
+		"control_metrics":   `"MetricsViewer"`,
 	} {
 		blk := regexp.MustCompile(`(?s)resource "confluent_role_binding" "` + binding + `" \{.*?\n}\n`).FindString(conf)
 		if !strings.Contains(blk, want) {
