@@ -326,10 +326,19 @@ func TestNoTaskHoldsAnAdministratorKey(t *testing.T) {
 	if n := strings.Count(conf, `"EnvironmentAdmin"`); n != 1 {
 		t.Errorf("EnvironmentAdmin is bound %d times: only the provisioner, whose keys no task holds, may have it", n)
 	}
-	for _, admin := range []string{"CloudClusterAdmin", "OrganizationAdmin", "ResourceOwner"} {
+	for _, admin := range []string{"OrganizationAdmin", "ResourceOwner"} {
 		if strings.Contains(conf, `"`+admin+`"`) {
 			t.Errorf("tf/confluent.tf binds %s", admin)
 		}
+	}
+	// the one other administrator role: reading a table's status needs it (see the comment on
+	// the binding), and it is the status account's alone
+	if n := strings.Count(conf, `"CloudClusterAdmin"`); n != 1 {
+		t.Errorf("CloudClusterAdmin is bound %d times: only the status account may have it", n)
+	}
+	status := regexp.MustCompile(`(?s)resource "confluent_role_binding" "status_cluster_admin" \{.*?\n}\n`).FindString(conf)
+	if !strings.Contains(status, "confluent_service_account.status.id") || !strings.Contains(status, "confluent_kafka_cluster.demo.rbac_crn") || strings.Contains(status, "/topic=") {
+		t.Error("CloudClusterAdmin must be bound to the status account, on the cluster")
 	}
 	prov := regexp.MustCompile(`(?s)resource "confluent_role_binding" "provisioner" \{.*?\n}\n`).FindString(conf)
 	if !strings.Contains(prov, "confluent_service_account.provisioner.id") || !strings.Contains(prov, "EnvironmentAdmin") {
@@ -351,11 +360,11 @@ func TestNoTaskHoldsAnAdministratorKey(t *testing.T) {
 	}
 	// what each account may do
 	for binding, want := range map[string]string{
-		"producer_write":    `"DeveloperWrite"`,
-		"query_read":        `"DeveloperRead"`,
-		"query_schema_read": `"DeveloperRead"`,
-		"status_topic_read": `"DeveloperRead"`,
-		"control_metrics":   `"MetricsViewer"`,
+		"producer_write":       `"DeveloperWrite"`,
+		"query_read":           `"DeveloperRead"`,
+		"query_schema_read":    `"DeveloperRead"`,
+		"status_cluster_admin": `"CloudClusterAdmin"`,
+		"control_metrics":      `"MetricsViewer"`,
 	} {
 		blk := regexp.MustCompile(`(?s)resource "confluent_role_binding" "` + binding + `" \{.*?\n}\n`).FindString(conf)
 		if !strings.Contains(blk, want) {

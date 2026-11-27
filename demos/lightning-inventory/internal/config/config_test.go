@@ -48,7 +48,7 @@ func TestRoleDoesNotReadOthersSecrets(t *testing.T) {
 	}
 	c, _ = Load(env(RoleControl, nil))
 	if c.GlobalAPIKey != "" || c.KafkaAPIKey != "" || c.StatusAPIKey == "" || c.StatusAPISecret == "" || c.CloudAPIKey == "" {
-		t.Fatal("the control task holds the read-only status and Cloud keys, not the query Global or Kafka key")
+		t.Fatal("the control task holds the status key (CloudClusterAdmin; the app only GETs) and the read-only Cloud key, not the query Global or Kafka key")
 	}
 }
 

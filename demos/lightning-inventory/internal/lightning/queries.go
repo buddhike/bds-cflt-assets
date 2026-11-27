@@ -1,6 +1,6 @@
 // Package lightning talks to the Confluent Cloud Lightning Table APIs documented at
 // https://docs.confluent.io/cloud/current/lightning-tables/ : the query endpoint and the
-// rtce-topics endpoint that reads a table's status. Terraform enables and disables the table.
+// rtce-topics list that gives a table's status. Terraform enables and disables the table.
 package lightning
 
 import (

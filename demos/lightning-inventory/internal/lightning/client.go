@@ -2,6 +2,7 @@ package lightning
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"lightninginv/internal/protocol"
@@ -26,10 +28,52 @@ var (
 	ErrNotFound = errors.New("not found (404)")
 )
 
-// StatusError is any other non-success answer.
-type StatusError struct{ Status int }
+// StatusError is any other non-success answer. Detail is what Confluent said was wrong
+// (the code and detail of its first error), when the answer has it: a 403 names the missing
+// role there.
+type StatusError struct {
+	Status int
+	Detail string
+}
 
-func (e *StatusError) Error() string { return fmt.Sprintf("unexpected HTTP status %d", e.Status) }
+func (e *StatusError) Error() string {
+	if e.Detail == "" {
+		return fmt.Sprintf("unexpected HTTP status %d", e.Status)
+	}
+	return fmt.Sprintf("unexpected HTTP status %d: %s", e.Status, e.Detail)
+}
+
+const maxDetail = 300
+
+// errorDetail reads the first error of a Confluent error body, {"errors":[{"code","title",
+// "detail"}]}, and returns "" for anything else. It is short, so the UI and the log stay so.
+func errorDetail(raw []byte) string {
+	var b struct {
+		Errors []struct {
+			Code, Title, Detail string
+		} `json:"errors"`
+	}
+	if json.Unmarshal(raw, &b) != nil || len(b.Errors) == 0 {
+		return ""
+	}
+	e := b.Errors[0]
+	msg := e.Detail
+	if msg == "" {
+		msg = e.Title
+	}
+	var parts []string
+	for _, p := range []string{e.Code, msg} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	// One line, whatever the body held, and short.
+	d := strings.Join(strings.Fields(strings.Join(parts, ": ")), " ")
+	if r := []rune(d); len(r) > maxDetail {
+		d = string(r[:maxDetail]) + "…"
+	}
+	return d
+}
 
 // Client reports whether the status is a 4xx: the request is refused, and repeating it soon
 // will not change that (credentials, permissions), unlike a 5xx.
@@ -157,42 +201,87 @@ func (t *Tables) scope() string {
 	return v.Encode()
 }
 
-// Status reads the table's phase. ErrNotFound means there is no table (yet).
+// maxPages bounds how many pages of the list Status follows.
+const maxPages = 10
+
+// Status reads the table's phase from the list of the cluster's tables (the by-name read is
+// refused to the status account's key). ErrNotFound means the topic has no table (yet).
 func (t *Tables) Status(ctx context.Context) (Phase, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.BaseURL+"/rtce/v1/rtce-topics/"+url.PathEscape(t.Topic)+"?"+t.scope(), nil)
+	base, err := url.Parse(t.BaseURL)
 	if err != nil {
 		return "", "", err
+	}
+	next := "" // the first page
+	for range maxPages {
+		page, err := t.listPage(ctx, next)
+		if err != nil {
+			return "", "", err
+		}
+		for _, d := range page.Data {
+			if d.Spec.TopicName == t.Topic {
+				return d.Status.Phase, d.Status.ErrorMessage, nil
+			}
+		}
+		if page.Metadata.Next == "" {
+			return "", "", ErrNotFound
+		}
+		// The next page is a URL Confluent gave. It is followed only on the same host, since
+		// the request carries the key.
+		u, err := url.Parse(page.Metadata.Next)
+		if err != nil || u.Scheme != base.Scheme || u.Host != base.Host {
+			return "", "", errors.New("the list's next page is not on the API host")
+		}
+		next = page.Metadata.Next
+	}
+	return "", "", fmt.Errorf("the table is not in the first %d pages of the list", maxPages)
+}
+
+type tablesPage struct {
+	Data []struct {
+		Spec struct {
+			TopicName string `json:"topic_name"`
+		} `json:"spec"`
+		Status struct {
+			Phase        Phase  `json:"phase"`
+			ErrorMessage string `json:"error_message"`
+		} `json:"status"`
+	} `json:"data"`
+	Metadata struct {
+		Next string `json:"next"`
+	} `json:"metadata"`
+}
+
+// listPage reads one page of the list: the first when target is empty, else a next-page URL.
+func (t *Tables) listPage(ctx context.Context, target string) (tablesPage, error) {
+	var page tablesPage
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cmp.Or(target, t.BaseURL+"/rtce/v1/rtce-topics?"+t.scope()), nil)
+	if err != nil {
+		return page, err
 	}
 	req.Header.Set("User-Agent", protocol.UserAgent)
 	t.Auth.apply(req)
 	resp, err := t.HTTP.Do(req)
 	if err != nil {
-		return "", "", err
+		return page, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", "", err
+		return page, err
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return "", "", ErrNotFound
+		return page, ErrNotFound
 	case http.StatusTooManyRequests:
-		return "", "", ErrRateLimited
+		return page, ErrRateLimited
 	default:
-		return "", "", &StatusError{Status: resp.StatusCode}
+		return page, &StatusError{Status: resp.StatusCode, Detail: errorDetail(raw)}
 	}
-	var out struct {
-		Status struct {
-			Phase        Phase  `json:"phase"`
-			ErrorMessage string `json:"error_message"`
-		} `json:"status"`
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return page, fmt.Errorf("the response is not the documented JSON: %w", err)
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", "", fmt.Errorf("the response is not the documented JSON: %w", err)
-	}
-	return out.Status.Phase, out.Status.ErrorMessage, nil
+	return page, nil
 }

@@ -187,7 +187,7 @@ run "task_definitions" {
 
   assert {
     condition     = toset([for s in jsondecode(aws_ecs_task_definition.role["control"].container_definitions)[0].secrets : s.name]) == toset(["LIGHTNING_ACCESS_TOKEN", "LIGHTNING_WORKER_TOKEN", "LIGHTNING_STATUS_API_KEY", "LIGHTNING_STATUS_API_SECRET", "LIGHTNING_CLOUD_API_KEY", "LIGHTNING_CLOUD_API_SECRET"])
-    error_message = "the control task holds the two tokens, the read-only status key and the read-only Cloud key, no query Global or Kafka key"
+    error_message = "the control task holds the two tokens, the status key (CloudClusterAdmin) and the read-only Cloud key, no query Global or Kafka key"
   }
 
   assert {
@@ -332,8 +332,8 @@ run "service_accounts_are_split" {
   }
 
   assert {
-    condition     = alltrue([for b in [confluent_role_binding.producer_write, confluent_role_binding.query_read, confluent_role_binding.query_schema_read, confluent_role_binding.status_topic_read, confluent_role_binding.control_metrics] : !contains(["EnvironmentAdmin", "CloudClusterAdmin", "OrganizationAdmin", "ResourceOwner"], b.role_name)])
-    error_message = "no task's service account may hold an administrator role"
+    condition     = alltrue([for b in [confluent_role_binding.producer_write, confluent_role_binding.query_read, confluent_role_binding.query_schema_read, confluent_role_binding.control_metrics] : !contains(["EnvironmentAdmin", "CloudClusterAdmin", "OrganizationAdmin", "ResourceOwner"], b.role_name)])
+    error_message = "no task's service account but the status account may hold an administrator role"
   }
 
   assert {
@@ -347,8 +347,8 @@ run "service_accounts_are_split" {
   }
 
   assert {
-    condition     = confluent_role_binding.status_topic_read.principal == "User:sa-status" && confluent_role_binding.status_topic_read.role_name == "DeveloperRead" && endswith(confluent_role_binding.status_topic_read.crn_pattern, "/topic=inventory_positions") && confluent_role_binding.control_metrics.principal == "User:sa-control" && confluent_role_binding.control_metrics.role_name == "MetricsViewer" && confluent_role_binding.control_metrics.crn_pattern == confluent_kafka_cluster.demo.rbac_crn
-    error_message = "the status account reads the topic's table status, the control account the cluster's metrics, and neither changes anything"
+    condition     = confluent_role_binding.status_cluster_admin.principal == "User:sa-status" && confluent_role_binding.status_cluster_admin.role_name == "CloudClusterAdmin" && confluent_role_binding.status_cluster_admin.crn_pattern == confluent_kafka_cluster.demo.rbac_crn && confluent_role_binding.control_metrics.principal == "User:sa-control" && confluent_role_binding.control_metrics.role_name == "MetricsViewer" && confluent_role_binding.control_metrics.crn_pattern == confluent_kafka_cluster.demo.rbac_crn
+    error_message = "the status account holds the one administrator role, on the cluster, to read the table's status; the control account reads the cluster's metrics and changes nothing"
   }
 
   assert {

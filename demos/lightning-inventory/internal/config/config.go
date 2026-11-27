@@ -62,7 +62,7 @@ type Config struct {
 	GlobalAPISecret string
 
 	// StatusAPIKey is the control task's Global key for the table's status. It is
-	// read-only (DeveloperRead on the topic).
+	// the status service account's: CloudClusterAdmin on the cluster, though the app only GETs.
 	StatusAPIKey    string
 	StatusAPISecret string
 

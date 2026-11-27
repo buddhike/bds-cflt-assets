@@ -60,8 +60,8 @@ data "confluent_schema_registry_cluster" "demo" {
 #   query        DeveloperRead on the topic and on Schema Registry.
 #   control      MetricsViewer on the cluster: it reads Confluent's usage metrics and
 #                changes nothing.
-#   status       DeveloperRead on the topic: the control task reads the table's status
-#                with its Global key, and changes nothing.
+#   status       CloudClusterAdmin on the cluster: the control task reads the table's status
+#                with its Global key, and never writes (the client only GETs).
 #
 # The Lightning Table itself is created by the provider's own credentials (the launching
 # user's Cloud API key), not by any of these.
@@ -87,7 +87,7 @@ resource "confluent_service_account" "control" {
 
 resource "confluent_service_account" "status" {
   display_name = "${local.name}-status-${confluent_environment.demo.id}"
-  description  = "Lightning inventory demo: the control task reading the table's status, read-only"
+  description  = "Lightning inventory demo: the control task reading the table's status"
 }
 
 resource "confluent_role_binding" "provisioner" {
@@ -121,13 +121,16 @@ resource "confluent_role_binding" "query_schema_read" {
   crn_pattern = "${data.confluent_schema_registry_cluster.demo.resource_name}/subject=*"
 }
 
-# The table's status (GET /rtce/v1/rtce-topics/...) is read with a Global key of this account:
-# a Cloud key with DeveloperRead on the topic, or on the topic pattern of the cluster, was
-# refused with 403.
-resource "confluent_role_binding" "status_topic_read" {
+# Reading the table's status (the list, GET /rtce/v1/rtce-topics; the by-name read is refused) answered 403 with DeveloperRead on
+# the topic, or on every topic of the cluster, and works with CloudClusterAdmin on the cluster
+# (found against a live account; the documents name no role for the read). It is the only
+# administrator role a task holds, and it is held by the status account alone. Its key is a
+# Global key, which the Lightning Tables documents accept; whether that kind of key can also
+# reach other management APIs is not documented here, so treat the key as an administrator's.
+resource "confluent_role_binding" "status_cluster_admin" {
   principal   = "User:${confluent_service_account.status.id}"
-  role_name   = "DeveloperRead"
-  crn_pattern = local.topic_crn
+  role_name   = "CloudClusterAdmin"
+  crn_pattern = confluent_kafka_cluster.demo.rbac_crn
 }
 
 # The control task reads Confluent's usage metrics for the table with this role, on the
@@ -231,8 +234,8 @@ resource "confluent_api_key" "query_global" {
   depends_on = [confluent_role_binding.query_read, confluent_role_binding.query_schema_read]
 }
 
-# A Global API key to read the table's status, which the Cloud key was refused. It grants
-# nothing by itself: it has the roles of the status service account, which are read-only.
+# A Global API key to read the table's status. It grants nothing by itself: it has the roles
+# of the status service account.
 resource "confluent_api_key" "status_global" {
   display_name = "${local.name}-status-global"
   description  = "The control task reading the table's status"
@@ -249,7 +252,7 @@ resource "confluent_api_key" "status_global" {
     kind        = "Global"
   }
 
-  depends_on = [confluent_role_binding.status_topic_read]
+  depends_on = [confluent_role_binding.status_cluster_admin]
 }
 
 # A Cloud API key, for the Metrics API (which takes no other kind). It has the roles of the
