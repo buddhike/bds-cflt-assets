@@ -22,6 +22,9 @@ import (
 	"lightninginv/internal/worker"
 )
 
+// epoch0 is control's first epoch in these tests: its start time (the test clock) in seconds.
+const epoch0 = 1_000_000
+
 const (
 	access = "access-token-access-token-1234"
 	wtok   = "worker-token-worker-token-1234"
@@ -68,6 +71,8 @@ type fakeLatency struct {
 	panics   bool
 	// failWith, when set, is what every Read returns.
 	failWith error
+	// onRead, when set, runs inside every Read (to move the test clock, as a slow read does).
+	onRead func()
 }
 
 func (f *fakeLatency) Read(ctx context.Context, _ time.Time, _ time.Duration) (map[string]*cw.Series, error) {
@@ -76,6 +81,9 @@ func (f *fakeLatency) Read(ctx context.Context, _ time.Time, _ time.Duration) (m
 	f.deadline.Store(has)
 	if f.panics {
 		panic("boom")
+	}
+	if f.onRead != nil {
+		f.onRead()
 	}
 	if f.failWith != nil {
 		return nil, f.failWith
@@ -225,13 +233,13 @@ func TestSeedLeasesShardsAndSurvivesALostWorker(t *testing.T) {
 	}
 	// p2 reports a shard done; it is then not leased again
 	done := p2.SeedShards[0]
-	if p1.SeedEpoch != 1 || p2.SeedEpoch != 1 {
-		t.Fatalf("epochs %d %d: the first load is epoch 1", p1.SeedEpoch, p2.SeedEpoch)
+	if p1.SeedEpoch != epoch0+1 || p2.SeedEpoch != epoch0+1 {
+		t.Fatalf("epochs %d %d: the first load is the one after control's start time %d", p1.SeedEpoch, p2.SeedEpoch, epoch0)
 	}
 	h := hb("p2", "producer")
-	h.SeedEpoch = 1
+	h.SeedEpoch = epoch0 + 1
 	h.SeedDone = []int{done, p1.SeedShards[0]} // a shard that p2 does not own is ignored
-	h.Seeded = 1234
+	h.SeedRecords = map[int]int64{done: 1234, p1.SeedShards[0]: 999}
 	p2, _ = s.Heartbeat(h)
 	for _, sh := range p2.SeedShards {
 		if sh == done {
@@ -252,7 +260,7 @@ func TestSeedLeasesShardsAndSurvivesALostWorker(t *testing.T) {
 	}
 	// all done
 	h = hb("p2", "producer")
-	h.SeedEpoch = 1
+	h.SeedEpoch = epoch0 + 1
 	h.SeedDone = p2.SeedShards
 	s.Heartbeat(h)
 	h.SeedDone = []int{done}
@@ -479,7 +487,7 @@ func TestHeartbeatCountsAreBounded(t *testing.T) {
 	s, _, _, _ := newSvc(t)
 	for _, h := range []protocol.Heartbeat{
 		{ID: "x", Role: "producer", Produced: -1},
-		{ID: "x", Role: "producer", Seeded: protocol.MaxCount + 1},
+		{ID: "x", Role: "producer", SeedRecords: map[int]int64{1: protocol.MaxCount + 1}},
 		{ID: "x", Role: "query", Queries: map[string]protocol.QueryStats{"by_sku": {OK: 1 << 40}}},
 	} {
 		if _, err := s.Heartbeat(h); !errors.Is(err, ErrInvalid) {
@@ -673,7 +681,7 @@ func TestSecondCatalogueLoadStartsFromScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, _ := s.Heartbeat(hb("p1", "producer"))
-	if p.SeedEpoch != 1 || len(p.SeedShards) != catalog.Shards {
+	if p.SeedEpoch != epoch0+1 || len(p.SeedShards) != catalog.Shards {
 		t.Fatalf("%+v", p)
 	}
 	all := make([]int, catalog.Shards)
@@ -681,7 +689,7 @@ func TestSecondCatalogueLoadStartsFromScratch(t *testing.T) {
 		all[i] = i
 	}
 	h := hb("p1", "producer")
-	h.SeedEpoch, h.SeedDone, h.Seeded = 1, all, 500
+	h.SeedEpoch, h.SeedDone, h.SeedRecords = epoch0+1, all, map[int]int64{0: 500}
 	s.Heartbeat(h)
 	if st := s.State().Catalogue; st.Status != "loaded" || st.Records != 500 {
 		t.Fatalf("%+v", st)
@@ -699,10 +707,10 @@ func TestSecondCatalogueLoadStartsFromScratch(t *testing.T) {
 		t.Fatalf("a report of the first load counted in the second: %+v", st)
 	}
 	p, _ = s.Heartbeat(hb("p1", "producer"))
-	if p.SeedEpoch != 2 || len(p.SeedShards) != catalog.Shards {
+	if p.SeedEpoch != epoch0+2 || len(p.SeedShards) != catalog.Shards {
 		t.Fatalf("%+v", p)
 	}
-	h.SeedEpoch, h.Seeded = 2, 700
+	h.SeedEpoch, h.SeedRecords = epoch0+2, map[int]int64{0: 700}
 	s.Heartbeat(h)
 	if st := s.State().Catalogue; st.Status != "loaded" || st.Records != 700 {
 		t.Fatalf("%+v", st)
@@ -766,4 +774,108 @@ func TestRecovererDoesNotWriteAfterTheResponseStarted(t *testing.T) {
 	if rec.Body.String() != "partial" {
 		t.Fatalf("body %q: something was written after the response started", rec.Body.String())
 	}
+}
+
+// A restarted control counts its epochs from its (later) start time, so a producer that held
+// an epoch of the earlier control never meets a new load with a number it already has.
+func TestEpochsStartFromTheStartTime(t *testing.T) {
+	early := New(Options{Now: func() time.Time { return time.Unix(1_000, 0) }})
+	late := New(Options{Now: func() time.Time { return time.Unix(2_000, 0) }})
+	early.seed.epoch++
+	late.seed.epoch++
+	if late.seed.epoch <= early.seed.epoch {
+		t.Fatalf("a restarted control's first epoch %d is not after the earlier one's %d", late.seed.epoch, early.seed.epoch)
+	}
+}
+
+// A shard's records count once: a resent report (a lost answer) or a report from a worker the
+// shard was taken from adds nothing, and records come only with an accepted done.
+func TestSeedRecordsCountOncePerShard(t *testing.T) {
+	s, _, _, clock := newSvc(t)
+	s.setTable(lightning.PhaseActive, "", "")
+	s.Heartbeat(hb("p1", "producer"))
+	if err := s.StartSeed(); err != nil {
+		t.Fatal(err)
+	}
+	p1, _ := s.Heartbeat(hb("p1", "producer"))
+	shard := p1.SeedShards[0]
+	h := hb("p1", "producer")
+	h.SeedEpoch, h.SeedDone, h.SeedRecords = p1.SeedEpoch, []int{shard}, map[int]int64{shard: 100}
+	s.Heartbeat(h)
+	s.Heartbeat(h) // the answer was lost and the report is sent again
+	if st := s.State().Catalogue; st.Records != 100 || st.ShardsDone != 1 {
+		t.Fatalf("a resent report counted twice: %+v", st)
+	}
+	// p1 goes quiet; p2 takes over the other shards; p1's late report for a shard that is now
+	// p2's counts nothing
+	*clock = clock.Add(10 * time.Second)
+	s.Heartbeat(hb("p2", "producer"))
+	p2, _ := s.Heartbeat(hb("p2", "producer"))
+	moved := p2.SeedShards[0]
+	late := hb("p1", "producer")
+	late.SeedEpoch, late.SeedDone, late.SeedRecords = p1.SeedEpoch, []int{moved}, map[int]int64{moved: 555}
+	s.Heartbeat(late)
+	if st := s.State().Catalogue; st.Records != 100 || st.ShardsDone != 1 {
+		t.Fatalf("a report for a shard that moved was counted: %+v", st)
+	}
+	d := hb("p2", "producer")
+	d.SeedEpoch, d.SeedDone, d.SeedRecords = p2.SeedEpoch, []int{moved}, map[int]int64{moved: 200}
+	s.Heartbeat(d)
+	if st := s.State().Catalogue; st.Records != 300 || st.ShardsDone != 2 {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// A slow failing read is remembered from when it ended: stamped from when it began it would be
+// as old as the error TTL already and every page would ask CloudWatch again.
+func TestLatencyErrorIsStampedWhenTheReadEnds(t *testing.T) {
+	s, _, fl, clock := newSvc(t)
+	fl.failWith = errors.New("timed out")
+	fl.onRead = func() { *clock = clock.Add(10 * time.Second) } // the read took 10 s
+	if _, err := s.Latency(context.Background(), 5); err == nil {
+		t.Fatal("no error")
+	}
+	if _, err := s.Latency(context.Background(), 5); err == nil {
+		t.Fatal("no error")
+	}
+	if fl.calls.Load() != 1 {
+		t.Fatalf("%d reads: the failure was already too old to be remembered", fl.calls.Load())
+	}
+	// and the same for a slow success
+	s2, _, fl2, clock2 := newSvc(t)
+	fl2.onRead = func() { *clock2 = clock2.Add(latencyTTL - time.Second) }
+	_, _ = s2.Latency(context.Background(), 5)
+	_, _ = s2.Latency(context.Background(), 5)
+	if fl2.calls.Load() != 1 {
+		t.Fatalf("%d reads: the cached result lost its life to the time the read took", fl2.calls.Load())
+	}
+}
+
+// Shutting down cuts the reads off; that is not a table or usage error to show or log.
+func TestCancelledReadsAreNotErrors(t *testing.T) {
+	s, ft, _, _ := newSvc(t)
+	ft.set("", context.Canceled)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, failed := s.pollTable(ctx, 0); failed || s.State().Table.Error != "" {
+		t.Fatalf("a cancelled status read was an error: %+v", s.State().Table)
+	}
+
+	s.o.Usage = blockingUsage{}
+	ctx, cancel = context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.usageLoop(ctx); close(done) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+	if e := s.State().Usage.Error; e != "" {
+		t.Fatalf("a cancelled usage read was shown as an error: %q", e)
+	}
+}
+
+type blockingUsage struct{}
+
+func (blockingUsage) Usage(ctx context.Context, _ time.Time) (confluentmetrics.Usage, error) {
+	<-ctx.Done()
+	return confluentmetrics.Usage{}, ctx.Err()
 }

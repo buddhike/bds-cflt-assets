@@ -53,9 +53,19 @@ type Control struct {
 	// Hold is how long the counts of undelivered heartbeats are kept; holdFor when zero.
 	Hold time.Duration
 
-	plan     atomic.Pointer[protocol.Plan]
-	lastGood atomic.Int64 // unix nanoseconds
+	// latest is the last plan and when it arrived, together (one load sees both). The time
+	// keeps its monotonic reading, so a step of the wall clock neither makes a fresh plan stale
+	// nor keeps a stale one.
+	latest atomic.Pointer[stamped]
 }
+
+type stamped struct {
+	plan protocol.Plan
+	at   time.Time
+}
+
+// setPlan stores a plan received at at.
+func (c *Control) setPlan(p protocol.Plan, at time.Time) { c.latest.Store(&stamped{plan: p, at: at}) }
 
 // NewControl returns a link with a fresh worker id.
 func NewControl(url, token string) *Control {
@@ -79,11 +89,11 @@ func newID() string {
 // Plan is the latest plan; the zero plan (do nothing) when control has not been heard
 // from lately.
 func (c *Control) Plan() protocol.Plan {
-	p := c.plan.Load()
-	if p == nil || time.Since(time.Unix(0, c.lastGood.Load())) > StaleAfter {
+	l := c.latest.Load()
+	if l == nil || time.Since(l.at) > StaleAfter {
 		return protocol.Plan{}
 	}
-	return *p
+	return l.plan
 }
 
 // Poll sends one heartbeat and stores the plan it gets back.
@@ -113,8 +123,7 @@ func (c *Control) Poll(ctx context.Context, hb protocol.Heartbeat) error {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&p); err != nil {
 		return err
 	}
-	c.plan.Store(&p)
-	c.lastGood.Store(time.Now().UnixNano())
+	c.setPlan(p, time.Now())
 	return nil
 }
 

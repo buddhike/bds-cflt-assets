@@ -89,17 +89,18 @@ type Producer struct {
 	Catalog catalog.Catalog
 	Seed    uint64
 
-	produced, produceErrs, seeded, seedErrs atomic.Int64
+	produced, produceErrs, seedErrs atomic.Int64
 
 	// SeedBackoffMin and SeedBackoffMax bound the wait after a shard that did not load;
 	// seedBackoffMin and seedBackoffMax when zero.
 	SeedBackoffMin, SeedBackoffMax time.Duration
 
 	mu        sync.Mutex
-	seedEpoch int          // the load seedDone belongs to
-	seedDone  map[int]bool // shards finished in seedEpoch
+	seedEpoch int           // the load seedDone belongs to
+	seedDone  map[int]bool  // shards finished in seedEpoch
+	seedRecs  map[int]int64 // records of each finished shard
 	// loadFn loads one shard of an epoch; loadShard unless a test replaces it.
-	loadFn func(ctx context.Context, shard, epoch int) error
+	loadFn func(ctx context.Context, shard, epoch int) (records int64, err error)
 }
 
 // send encodes and queues one record. ok and bad are the counters the heartbeat reports
@@ -125,7 +126,10 @@ func (p *Producer) send(ctx context.Context, sku, loc string, qty int, ok, bad, 
 	}
 	p.Sender.Send(ctx, catalog.Key(sku, loc), val, func(err error) {
 		if err != nil {
-			fail(errors.Is(err, context.Canceled))
+			// Cancelled, or the client closed at stop: the task or the shard ending, not a
+			// failed record, for the heartbeat's count. (The shard's own count includes it:
+			// a shard whose records were cancelled is not done.)
+			fail(errors.Is(err, context.Canceled) || errors.Is(err, kgo.ErrClientClosed))
 			return
 		}
 		if shardOK != nil {
@@ -136,16 +140,29 @@ func (p *Producer) send(ctx context.Context, sku, loc string, qty int, ok, bad, 
 	})
 }
 
+// initSeed makes the maps of the load's progress, if they are not there.
+func (p *Producer) initSeed() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seedDone == nil {
+		p.seedDone, p.seedRecs = map[int]bool{}, map[int]int64{}
+	}
+}
+
 func (p *Producer) heartbeat() protocol.Heartbeat {
 	// Under the lock so that the seed counts and the epoch they belong to are read together.
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	hb := protocol.Heartbeat{
 		Role: "producer", Produced: p.produced.Swap(0), ProduceErrors: p.produceErrs.Swap(0),
-		Seeded: p.seeded.Swap(0), SeedErrors: p.seedErrs.Swap(0), SeedEpoch: p.seedEpoch,
+		SeedErrors: p.seedErrs.Swap(0), SeedEpoch: p.seedEpoch,
 	}
 	for s := range p.seedDone {
 		hb.SeedDone = append(hb.SeedDone, s)
+		if hb.SeedRecords == nil {
+			hb.SeedRecords = map[int]int64{}
+		}
+		hb.SeedRecords[s] = p.seedRecs[s]
 	}
 	return hb
 }
@@ -156,7 +173,7 @@ const stopGrace = 5 * time.Second
 
 // Run blocks until ctx ends.
 func (p *Producer) Run(ctx context.Context) {
-	p.seedDone = map[int]bool{}
+	p.initSeed()
 	go p.Ctl.Loop(ctx, p.heartbeat)
 	go p.seedLoop(ctx)
 
@@ -206,6 +223,7 @@ func (p *Producer) seedLoop(ctx context.Context) {
 	if hi <= 0 {
 		hi = seedBackoffMax
 	}
+	p.initSeed()
 	load := p.loadFn
 	if load == nil {
 		load = p.loadShard
@@ -219,20 +237,28 @@ func (p *Producer) seedLoop(ctx context.Context) {
 			}
 			continue
 		}
-		err := load(ctx, shard, epoch)
+		n, err := load(ctx, shard, epoch)
 		if err == nil {
 			p.mu.Lock()
 			// Only if the load is still the one this shard was loaded for.
 			if p.seedEpoch == epoch {
 				p.seedDone[shard] = true
+				p.seedRecs[shard] = n
 			}
 			p.mu.Unlock()
-			slog.Info("Loaded a catalogue shard", "shard", shard)
+			slog.Info("Loaded a catalogue shard", "shard", shard, "records", n)
 			backoff = 0
 			continue
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if errors.Is(err, errLeaseLost) {
+			// Control gave the shard away (or started another load): nothing is wrong, and
+			// the next shard, if any, is not made to wait for it.
+			slog.Info("A catalogue shard is no longer this task's", "shard", shard)
+			backoff = 0
+			continue
 		}
 		backoff = nextBackoff(backoff, lo, hi)
 		slog.Warn("A catalogue shard did not load; it will be tried again", "shard", shard, "error", err, "retry_in", backoff.String())
@@ -255,18 +281,24 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // nextShard is a shard control leases to this task and has not finished in the current load.
-// A plan with a newer SeedEpoch is a new load of the catalogue: what this task had finished
-// belongs to the old one, so it is forgotten and the shards are loaded again.
+// A plan with a different, non-zero SeedEpoch is another load of the catalogue: what this task
+// had finished and counted belongs to the old one, so it is forgotten, and the shards are
+// loaded again. Any different epoch counts, not only a larger one: control's epochs restart
+// from its start time when it is restarted. Epoch 0 is no load at all (or a plan gone stale),
+// and changes nothing.
 func (p *Producer) nextShard() (shard, epoch int, ok bool) {
 	pl := p.Ctl.Plan()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if pl.SeedEpoch > p.seedEpoch {
-		p.seedEpoch = pl.SeedEpoch
-		p.seedDone = map[int]bool{}
+	if pl.SeedEpoch == 0 {
+		return 0, 0, false
 	}
 	if pl.SeedEpoch != p.seedEpoch {
-		return 0, 0, false // an older plan than what this task already knows
+		p.seedEpoch = pl.SeedEpoch
+		p.seedDone, p.seedRecs = map[int]bool{}, map[int]int64{}
+		// The old load's error count must not be reported under the new epoch (and counted in
+		// its Errors).
+		p.seedErrs.Store(0)
 	}
 	for _, s := range pl.SeedShards {
 		if !p.seedDone[s] {
@@ -294,31 +326,44 @@ func (p *Producer) holdsShard(shard, epoch int) bool {
 // replaced by a new one.
 var errLeaseLost = errors.New("control no longer leases the shard to this task")
 
-// loadShard produces every position of the SKUs of one shard of load epoch. It returns nil
-// only if every record was delivered. Failures are counted in the shard's own counter, which
-// the heartbeat does not touch, and the records delivered are added to the heartbeat's
-// Seeded only once the shard is complete, so a shard that is tried again is not counted twice.
+// loadShard produces every position of the SKUs of one shard of load epoch and returns how
+// many records it delivered. The error is nil only if every record was delivered. Failures are
+// counted in the shard's own counter, which the heartbeat does not touch; what the heartbeat
+// reports (the load's error count) is added only when the shard ends, and only if it is still
+// the current load, so a replaced load's late failures do not land in the next one's.
 //
-// Two contexts, on purpose. The pacer stops on pacerCtx, which is cancelled when the last
-// record has been queued. The records carry recCtx, which stays live until the flush has
-// returned: cancelling it earlier would fail the records still buffered in the client, and
-// those would not be delivered. recCtx is cancelled early only to abandon the shard (lease
-// lost, the task stopping).
-func (p *Producer) loadShard(ctx context.Context, shard, epoch int) error {
+// Two contexts, on purpose. The pacer stops on pacerCtx, cancelled when the last record has
+// been queued. The records carry recCtx, which stays live until the flush has returned:
+// cancelling it earlier would fail the records still buffered in the client, and those would
+// not be delivered. recCtx is cancelled early only to abandon the shard (lease lost, the task
+// stopping).
+func (p *Producer) loadShard(ctx context.Context, shard, epoch int) (int64, error) {
 	sku, j := shard, 0
-	var shardOK, shardErrs atomic.Int64
+	var shardOK, shardErrs, hbErrs atomic.Int64
 	var lost atomic.Bool
 	recCtx, abandon := context.WithCancel(ctx)
 	defer abandon()
 	pacerCtx, stopPacer := context.WithCancel(recCtx)
 	defer stopPacer()
-	// Check the lease once a second, not per record.
+	defer func() {
+		if n := hbErrs.Load(); n > 0 {
+			p.mu.Lock()
+			if p.seedEpoch == epoch {
+				p.seedErrs.Add(n)
+			}
+			p.mu.Unlock()
+		}
+	}()
+	// Check the lease once a second, for as long as the shard is being worked on: the flush
+	// can take 30 s, during which the shard may be given to another task.
+	leaseDone := make(chan struct{})
+	defer close(leaseDone)
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for {
 			select {
-			case <-pacerCtx.Done():
+			case <-leaseDone:
 				return
 			case <-t.C:
 				if !p.holdsShard(shard, epoch) {
@@ -330,6 +375,11 @@ func (p *Producer) loadShard(ctx context.Context, shard, epoch int) error {
 		}
 	}()
 	Pace(pacerCtx, func() float64 {
+		// Nothing is produced for a shard that is no longer ours, not even until the next
+		// lease check: two tasks would be loading it at twice the fixed rate.
+		if lost.Load() || !p.holdsShard(shard, epoch) {
+			return 0
+		}
 		return min(p.Ctl.Plan().SeedRate, SeedRecordsPerSec)
 	}, func() {
 		if sku >= catalog.SKUs {
@@ -338,31 +388,29 @@ func (p *Producer) loadShard(ctx context.Context, shard, epoch int) error {
 		}
 		loc := catalog.Location(p.Catalog.LocationAt(sku, j))
 		// Seed quantities are the same every time, so loading twice changes nothing.
-		p.send(recCtx, catalog.SKU(sku), loc, (sku+j)%(catalog.MaxQuantity+1), &p.seeded, &p.seedErrs, &shardOK, &shardErrs)
+		p.send(recCtx, catalog.SKU(sku), loc, (sku+j)%(catalog.MaxQuantity+1), nil, &hbErrs, &shardOK, &shardErrs)
 		if j++; j >= p.Catalog.Count(sku) {
 			sku, j = sku+catalog.Shards, 0
 		}
 	})
+	// The pacer ends only when the last record is queued, or the shard is abandoned.
 	switch {
 	case ctx.Err() != nil:
-		return ctx.Err()
+		return 0, ctx.Err()
 	case lost.Load():
-		return errLeaseLost
-	case sku < catalog.SKUs:
-		return errors.New("the loading rate dropped to zero before the shard was done")
+		return 0, errLeaseLost
 	}
 	fctx, fcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer fcancel()
 	if err := p.Sender.Flush(fctx); err != nil {
-		return fmt.Errorf("could not flush the shard: %w", err)
+		hbErrs.Add(1) // shown in the UI's error count, not only logged
+		return 0, fmt.Errorf("could not flush the shard: %w", err)
+	}
+	if lost.Load() { // given away while the flush ran
+		return 0, errLeaseLost
 	}
 	if n := shardErrs.Load(); n > 0 {
-		return fmt.Errorf("%d records of the shard were not delivered", n)
+		return 0, fmt.Errorf("%d records of the shard were not delivered", n)
 	}
-	p.mu.Lock()
-	if p.seedEpoch == epoch { // still this load: a replaced one's records are not counted in the next
-		p.seeded.Add(shardOK.Load())
-	}
-	p.mu.Unlock()
-	return nil
+	return shardOK.Load(), nil
 }

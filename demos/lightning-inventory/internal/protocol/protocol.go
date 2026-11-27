@@ -39,14 +39,17 @@ type Heartbeat struct {
 
 	Produced      int64 `json:"produced,omitempty"`
 	ProduceErrors int64 `json:"produce_errors,omitempty"`
-	Seeded        int64 `json:"seeded,omitempty"`
 	SeedErrors    int64 `json:"seed_errors,omitempty"`
-	// SeedEpoch is the load (Plan.SeedEpoch) that Seeded, SeedErrors and SeedDone belong to.
+	// SeedEpoch is the load (Plan.SeedEpoch) that SeedErrors, SeedDone and SeedRecords belong to.
 	// Control ignores them when it is not the current one, so a report from an earlier load
 	// cannot mark a shard of the next one done.
 	SeedEpoch int `json:"seed_epoch,omitempty"`
-	// SeedDone lists shards the worker has finished loading in SeedEpoch.
-	SeedDone []int `json:"seed_done,omitempty"`
+	// SeedDone lists shards the worker has finished loading in SeedEpoch, and SeedRecords
+	// says how many records each held. Control adds a shard's records once, when it first
+	// accepts the shard as done from its owner, so a resend or a shard handed to another
+	// worker cannot count twice.
+	SeedDone    []int         `json:"seed_done,omitempty"`
+	SeedRecords map[int]int64 `json:"seed_records,omitempty"`
 
 	Queries map[string]QueryStats `json:"queries,omitempty"`
 }
@@ -60,12 +63,17 @@ func (h *Heartbeat) Merge(o Heartbeat) {
 	// older one's: they are not additive, and control would ignore the old ones anyway.
 	switch {
 	case o.SeedEpoch > h.SeedEpoch:
-		h.SeedEpoch, h.Seeded, h.SeedErrors, h.SeedDone = o.SeedEpoch, 0, 0, nil
+		h.SeedEpoch, h.SeedErrors, h.SeedDone, h.SeedRecords = o.SeedEpoch, 0, nil, nil
 	case o.SeedEpoch < h.SeedEpoch:
-		o.Seeded, o.SeedErrors, o.SeedDone = 0, 0, nil
+		o.SeedErrors, o.SeedDone, o.SeedRecords = 0, nil, nil
 	}
-	h.Seeded += o.Seeded
 	h.SeedErrors += o.SeedErrors
+	for sh, n := range o.SeedRecords {
+		if h.SeedRecords == nil {
+			h.SeedRecords = map[int]int64{}
+		}
+		h.SeedRecords[sh] = n
+	}
 	seen := map[int]bool{}
 	for _, s := range h.SeedDone {
 		seen[s] = true
@@ -92,12 +100,17 @@ func (h *Heartbeat) Merge(o Heartbeat) {
 // Valid reports whether every count is within bounds. Unknown scenario names are ignored by
 // control, but there may not be many.
 func (h Heartbeat) Valid() bool {
-	for _, n := range []int64{h.Produced, h.ProduceErrors, h.Seeded, h.SeedErrors} {
+	for _, n := range []int64{h.Produced, h.ProduceErrors, h.SeedErrors} {
 		if n < 0 || n > MaxCount {
 			return false
 		}
 	}
-	if h.SeedEpoch < 0 || len(h.SeedDone) > 64 || len(h.Queries) > 8 {
+	for _, n := range h.SeedRecords {
+		if n < 0 || n > MaxCount {
+			return false
+		}
+	}
+	if h.SeedEpoch < 0 || len(h.SeedDone) > 64 || len(h.SeedRecords) > 64 || len(h.Queries) > 8 {
 		return false
 	}
 	for _, st := range h.Queries {

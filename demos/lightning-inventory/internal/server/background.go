@@ -67,6 +67,10 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // but stops at pollClientErrorMax: it is often only a key that has not taken effect yet.
 func (s *Service) pollTable(ctx context.Context, prevErrWait time.Duration) (wait time.Duration, failed bool) {
 	phase, msg, err := s.o.Tables.Status(ctx)
+	if ctx.Err() != nil {
+		// Shutting down: the read was cut off. That is not a table problem to log or show.
+		return pollSettling, false
+	}
 	if errors.Is(err, lightning.ErrNotFound) {
 		// Terraform has not made it yet (or has just removed it).
 		s.setTable("", "", "")
@@ -124,6 +128,9 @@ func (s *Service) usageLoop(ctx context.Context) {
 	wait := usageEvery
 	for ctx.Err() == nil {
 		u, err := s.o.Usage.Usage(ctx, s.o.Now())
+		if ctx.Err() != nil {
+			return // shutting down: a cut-off read is not an error to log or show
+		}
 		s.mu.Lock()
 		if err != nil {
 			s.usageErr = err.Error()

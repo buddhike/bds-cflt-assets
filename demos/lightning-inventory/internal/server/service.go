@@ -129,7 +129,7 @@ func New(o Options) *Service {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Service{
+	svc := &Service{
 		o:        o,
 		events:   load{rate: worker.DefaultEventsPerSec},
 		queries:  load{rate: worker.DefaultQueriesPerSec},
@@ -139,6 +139,11 @@ func New(o Options) *Service {
 		latFly:   map[time.Duration]*latCall{},
 		latErr:   map[time.Duration]latErrEntry{},
 	}
+	// Control's state is in memory, so a restarted control would count its loads from 0 again
+	// and could reuse an epoch a producer already holds, which that producer would take for the
+	// same load. Counting from the start time makes a restart's epochs new ones.
+	svc.seed.epoch = int(o.Now().Unix())
+	return svc
 }
 
 func (s *Service) aliveLocked(role string, now time.Time) []string {
@@ -189,11 +194,13 @@ func (s *Service) Heartbeat(hb protocol.Heartbeat) (protocol.Plan, error) {
 		// Only a report of the current load counts: one from an earlier load (a producer
 		// that has not yet seen the new epoch) must not mark this load's shards done.
 		if s.seed.active && hb.SeedEpoch == s.seed.epoch {
-			s.seed.loaded += hb.Seeded
 			s.seed.errors += hb.SeedErrors
 			for _, sh := range hb.SeedDone {
-				if sh >= 0 && sh < catalog.Shards && s.seed.shards[sh].owner == hb.ID {
+				// A shard counts once, when its owner first reports it done: a resend (a lost
+				// answer) or a report from a worker the shard was taken from adds nothing.
+				if sh >= 0 && sh < catalog.Shards && s.seed.shards[sh].owner == hb.ID && !s.seed.shards[sh].done {
 					s.seed.shards[sh].done = true
+					s.seed.loaded += hb.SeedRecords[sh]
 				}
 			}
 		}

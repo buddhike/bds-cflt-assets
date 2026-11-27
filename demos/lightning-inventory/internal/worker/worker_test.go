@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kgo"
+
 	"lightninginv/internal/catalog"
 	"lightninginv/internal/cw"
 	"lightninginv/internal/lightning"
@@ -129,7 +131,7 @@ func TestControlPlanGoesStale(t *testing.T) {
 	if p := c.Plan(); !p.Run || p.Rate != 5 {
 		t.Fatalf("%+v", p)
 	}
-	c.lastGood.Store(time.Now().Add(-time.Minute).UnixNano())
+	c.setPlan(c.latest.Load().plan, time.Now().Add(-time.Minute))
 	if c.Plan().Run {
 		t.Fatal("kept running on a stale plan: a load nobody can stop")
 	}
@@ -146,6 +148,7 @@ func TestControlPlanGoesStale(t *testing.T) {
 type pendingRec struct {
 	ctx  context.Context
 	done func(error)
+	over bool // delivered or failed already
 }
 
 type fakeSender struct {
@@ -158,9 +161,14 @@ type fakeSender struct {
 	// Flush, and a record whose context has been cancelled by then fails with that error, as
 	// franz-go fails buffered records of a cancelled context.
 	linger  bool
-	pending []pendingRec
+	pending []*pendingRec
 	acked   int // records acknowledged without error
 	lost    int // records failed with a cancelled context
+	// flushErr is what Flush returns, when set.
+	flushErr error
+	// flushWaits makes Flush wait until a buffered record's context ends, as it would if the
+	// client could not deliver and the shard were abandoned meanwhile.
+	flushWaits bool
 }
 
 func (f *fakeSender) Send(ctx context.Context, key string, _ []byte, done func(error)) {
@@ -168,8 +176,12 @@ func (f *fakeSender) Send(ctx context.Context, key string, _ []byte, done func(e
 	f.keys = append(f.keys, key)
 	n := len(f.keys)
 	if f.linger {
-		f.pending = append(f.pending, pendingRec{ctx, done})
+		rec := &pendingRec{ctx: ctx, done: done}
+		f.pending = append(f.pending, rec)
 		f.mu.Unlock()
+		// A record whose context ends while it is still buffered fails at once with that
+		// error, as the Kafka client fails it, whether or not anyone flushes.
+		context.AfterFunc(ctx, func() { f.finish(rec) })
 		return
 	}
 	f.mu.Unlock()
@@ -184,25 +196,40 @@ func (f *fakeSender) Send(ctx context.Context, key string, _ []byte, done func(e
 	done(nil)
 }
 
-func (f *fakeSender) Flush(context.Context) error {
+// finish settles a buffered record: failed if its context has ended, delivered if not.
+func (f *fakeSender) finish(r *pendingRec) {
+	f.mu.Lock()
+	if r.over {
+		f.mu.Unlock()
+		return
+	}
+	r.over = true
+	err := r.ctx.Err()
+	if err != nil {
+		f.lost++
+	} else {
+		f.acked++
+	}
+	f.mu.Unlock()
+	r.done(err)
+}
+
+func (f *fakeSender) Flush(ctx context.Context) error {
 	f.mu.Lock()
 	pend := f.pending
 	f.pending = nil
+	waits, err := f.flushWaits, f.flushErr
 	f.mu.Unlock()
-	for _, r := range pend {
-		if err := r.ctx.Err(); err != nil {
-			f.mu.Lock()
-			f.lost++
-			f.mu.Unlock()
-			r.done(err)
-			continue
+	if waits && len(pend) > 0 {
+		select {
+		case <-pend[0].ctx.Done():
+		case <-ctx.Done():
 		}
-		f.mu.Lock()
-		f.acked++
-		f.mu.Unlock()
-		r.done(nil)
 	}
-	return nil
+	for _, r := range pend {
+		f.finish(r)
+	}
+	return err
 }
 func (f *fakeSender) n() int {
 	f.mu.Lock()
@@ -405,9 +432,8 @@ func TestShardWithFailedRecordIsNotDoneAcrossAHeartbeat(t *testing.T) {
 	codec, _ := NewCodec(1)
 	fs := &fakeSender{}
 	ctl := NewControl("http://unused.invalid", "tok")
-	ctl.plan.Store(&protocol.Plan{SeedEpoch: 1, SeedShards: []int{3}, SeedRate: SeedRecordsPerSec, Workers: 1})
-	ctl.lastGood.Store(time.Now().UnixNano())
-	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedDone: map[int]bool{}, seedEpoch: 1}
+	ctl.setPlan(protocol.Plan{SeedEpoch: 1, SeedShards: []int{3}, SeedRate: SeedRecordsPerSec, Workers: 1}, time.Now())
+	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedEpoch: 1}
 	var reported protocol.Heartbeat
 	fs.hook = func(n int) error {
 		switch n {
@@ -418,29 +444,26 @@ func TestShardWithFailedRecordIsNotDoneAcrossAHeartbeat(t *testing.T) {
 		}
 		return nil
 	}
-	err := p.loadShard(context.Background(), 3, 1)
+	_, err := p.loadShard(context.Background(), 3, 1)
 	if err == nil || !strings.Contains(err.Error(), "1 records") {
 		t.Fatalf("the shard was reported done despite a failed record: %v", err)
 	}
-	if reported.SeedErrors != 1 {
-		t.Fatalf("the heartbeat reported %d errors, want 1", reported.SeedErrors)
+	if reported.SeedErrors != 0 {
+		t.Fatalf("a heartbeat in mid-shard reported %d errors: they are reported when the shard ends", reported.SeedErrors)
 	}
-	if p.seedErrs.Load() != 0 {
-		t.Fatal("the heartbeat counter was not zeroed: the test does not exercise the swap")
+	if hb := p.heartbeat(); hb.SeedErrors != 1 || len(hb.SeedDone) != 0 {
+		t.Fatalf("after the failed shard: %+v", hb)
 	}
 
-	// the failed attempt counted no records as loaded: the retry must not be added to them
-	if hb := p.heartbeat(); hb.Seeded != 0 {
-		t.Fatalf("a failed shard counted %d records as loaded", hb.Seeded)
-	}
-	// the same shard with no failures is done, and counts its records once
+	// the same shard with no failures is done, and its records are returned once
 	fs2 := &fakeSender{}
 	p.Sender = fs2
-	if err := p.loadShard(context.Background(), 3, 1); err != nil {
+	n, err := p.loadShard(context.Background(), 3, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if hb := p.heartbeat(); hb.Seeded != int64(shardRecords(cat, 3)) {
-		t.Fatalf("seeded %d, want %d", hb.Seeded, shardRecords(cat, 3))
+	if n != int64(shardRecords(cat, 3)) {
+		t.Fatalf("delivered %d, want %d", n, shardRecords(cat, 3))
 	}
 }
 
@@ -513,20 +536,20 @@ func TestHeartbeatMergeAndBounds(t *testing.T) {
 	}
 	// the seed fields belong to one load: a newer load replaces an older one's, and an older
 	// one's are dropped when merged into a newer
-	n := protocol.Heartbeat{SeedEpoch: 1, Seeded: 5, SeedDone: []int{1}}
-	n.Merge(protocol.Heartbeat{SeedEpoch: 2, Seeded: 7, SeedDone: []int{2}})
-	if n.SeedEpoch != 2 || n.Seeded != 7 || len(n.SeedDone) != 1 || n.SeedDone[0] != 2 {
+	n := protocol.Heartbeat{SeedEpoch: 1, SeedErrors: 5, SeedDone: []int{1}, SeedRecords: map[int]int64{1: 10}}
+	n.Merge(protocol.Heartbeat{SeedEpoch: 2, SeedErrors: 7, SeedDone: []int{2}, SeedRecords: map[int]int64{2: 20}})
+	if n.SeedEpoch != 2 || n.SeedErrors != 7 || len(n.SeedDone) != 1 || n.SeedDone[0] != 2 || len(n.SeedRecords) != 1 || n.SeedRecords[2] != 20 {
 		t.Fatalf("%+v", n)
 	}
-	n.Merge(protocol.Heartbeat{SeedEpoch: 1, Seeded: 100, SeedDone: []int{9}})
-	if n.Seeded != 7 || len(n.SeedDone) != 1 {
+	n.Merge(protocol.Heartbeat{SeedEpoch: 1, SeedErrors: 100, SeedDone: []int{9}, SeedRecords: map[int]int64{9: 1}})
+	if n.SeedErrors != 7 || len(n.SeedDone) != 1 || len(n.SeedRecords) != 1 {
 		t.Fatalf("an older load's counts were merged into a newer: %+v", n)
 	}
 	if (protocol.Heartbeat{SeedEpoch: -1}).Valid() {
 		t.Fatal("a negative epoch is valid")
 	}
 	for _, bad := range []protocol.Heartbeat{
-		{Produced: -1}, {Produced: protocol.MaxCount + 1}, {Seeded: 1 << 40},
+		{Produced: -1}, {Produced: protocol.MaxCount + 1}, {SeedErrors: 1 << 40}, {SeedRecords: map[int]int64{1: -1}},
 		{Queries: map[string]protocol.QueryStats{"by_sku": {OK: -5}}},
 		{Queries: map[string]protocol.QueryStats{"by_sku": {Rows: protocol.MaxRows + 1}}},
 		{SeedDone: make([]int, 65)},
@@ -614,8 +637,7 @@ func TestPublishFailureIsRetriedFromABoundedBacklog(t *testing.T) {
 func keepFresh(ctx context.Context, ctl *Control, plan func() protocol.Plan) {
 	set := func() {
 		pl := plan()
-		ctl.plan.Store(&pl)
-		ctl.lastGood.Store(time.Now().UnixNano())
+		ctl.setPlan(pl, time.Now())
 	}
 	set()
 	go func() {
@@ -653,16 +675,14 @@ func TestShardTailIsDeliveredNotCancelled(t *testing.T) {
 	keepFresh(ctx, ctl, func() protocol.Plan {
 		return protocol.Plan{SeedEpoch: 1, SeedShards: []int{3}, SeedRate: SeedRecordsPerSec}
 	})
-	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedDone: map[int]bool{}, seedEpoch: 1}
-	if err := p.loadShard(ctx, 3, 1); err != nil {
+	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedEpoch: 1}
+	n, err := p.loadShard(ctx, 3, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := shardRecords(cat, 3)
-	if fs.lost != 0 || fs.acked != want {
-		t.Fatalf("%d of %d records delivered, %d lost to a cancelled context", fs.acked, want, fs.lost)
-	}
-	if hb := p.heartbeat(); hb.Seeded != int64(want) || hb.SeedErrors != 0 {
-		t.Fatalf("heartbeat %+v, want %d seeded", hb, want)
+	if fs.lost != 0 || fs.acked != want || n != int64(want) {
+		t.Fatalf("%d of %d records delivered (returned %d), %d lost to a cancelled context", fs.acked, want, n, fs.lost)
 	}
 }
 
@@ -677,18 +697,41 @@ func TestAbandonedShardIsNotDoneAndNotCounted(t *testing.T) {
 	var taken atomic.Bool
 	keepFresh(ctx, ctl, func() protocol.Plan {
 		if taken.Load() {
-			return protocol.Plan{SeedEpoch: 1} // the shard is somebody else's now
+			return protocol.Plan{SeedEpoch: 1, SeedRate: 2000} // the shard is somebody else's now; the rate is still announced
 		}
 		return protocol.Plan{SeedEpoch: 1, SeedShards: []int{3}, SeedRate: 2000}
 	})
-	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedDone: map[int]bool{}, seedEpoch: 1}
+	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedEpoch: 1}
 	go func() { time.Sleep(300 * time.Millisecond); taken.Store(true) }()
-	err := p.loadShard(ctx, 3, 1)
-	if !errors.Is(err, errLeaseLost) {
-		t.Fatalf("err %v", err)
+	n, err := p.loadShard(ctx, 3, 1)
+	if !errors.Is(err, errLeaseLost) || n != 0 {
+		t.Fatalf("err %v, %d records", err, n)
 	}
-	if hb := p.heartbeat(); hb.Seeded != 0 {
-		t.Fatalf("an abandoned shard counted %d records", hb.Seeded)
+	// Nothing is produced for a shard that is no longer ours, not even until the next lease
+	// check a second later: at 2000/s that would be ~2600 records by now, not ~600.
+	if sent := fs.n(); sent > 1200 {
+		t.Fatalf("%d records were produced although the lease was gone after 0.3 s", sent)
+	}
+	// The buffered records of the abandoned shard fail as cancelled (the fake does, as the
+	// client does); that is not a produce error to report.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		fs.mu.Lock()
+		lost := fs.lost
+		fs.mu.Unlock()
+		if lost > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	fs.mu.Lock()
+	lost := fs.lost
+	fs.mu.Unlock()
+	if lost == 0 {
+		t.Fatal("the abandoned shard's pending records were never failed: the test does not exercise the cancelled path")
+	}
+	if hb := p.heartbeat(); hb.SeedErrors != 0 || len(hb.SeedDone) != 0 {
+		t.Fatalf("cancelled records counted as errors: %+v", hb)
 	}
 }
 
@@ -706,7 +749,7 @@ func TestSecondCatalogueLoadProducesAgain(t *testing.T) {
 	keepFresh(ctx, ctl, func() protocol.Plan {
 		return protocol.Plan{SeedEpoch: int(epoch.Load()), SeedShards: []int{3}, SeedRate: SeedRecordsPerSec}
 	})
-	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1, seedDone: map[int]bool{}}
+	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, Seed: 1}
 	go p.seedLoop(ctx)
 	want := shardRecords(cat, 3)
 	waitFor := func(what string, ok func() bool) {
@@ -768,15 +811,15 @@ func TestSeedLoopBacksOffAndRecovers(t *testing.T) {
 	})
 	var mu sync.Mutex
 	var at []time.Time
-	p := &Producer{Ctl: ctl, SeedBackoffMin: 20 * time.Millisecond, SeedBackoffMax: 60 * time.Millisecond, seedDone: map[int]bool{}}
-	p.loadFn = func(context.Context, int, int) error {
+	p := &Producer{Ctl: ctl, SeedBackoffMin: 20 * time.Millisecond, SeedBackoffMax: 60 * time.Millisecond}
+	p.loadFn = func(context.Context, int, int) (int64, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		at = append(at, time.Now())
 		if len(at) <= 4 {
-			return errors.New("kafka is down")
+			return 0, errors.New("kafka is down")
 		}
-		return nil
+		return 42, nil
 	}
 	go p.seedLoop(ctx)
 	deadline := time.Now().Add(5 * time.Second)
@@ -871,5 +914,181 @@ func TestPaceRateLowered(t *testing.T) {
 	Pace(ctx, func() float64 { return float64(rate.Load()) / 10 }, func() { n.Add(1) })
 	if after := n.Load() - atLower.Load(); after > 12 {
 		t.Fatalf("%d calls in 0.9 s after the rate dropped to 2/s", after)
+	}
+}
+
+func planOf(epoch int, shards ...int) protocol.Plan {
+	return protocol.Plan{SeedEpoch: epoch, SeedShards: shards, SeedRate: 1000}
+}
+
+// Control's epochs are in memory: a restarted control may announce a lower number than the one
+// this producer holds. The producer must follow it, not wait for a larger one for ever.
+func TestProducerFollowsAnEpochThatDecreases(t *testing.T) {
+	ctl := NewControl("http://unused.invalid", "tok")
+	p := &Producer{Ctl: ctl}
+	p.initSeed()
+	ctl.setPlan(planOf(5, 7), time.Now())
+	if sh, e, ok := p.nextShard(); !ok || sh != 7 || e != 5 {
+		t.Fatalf("%v %v %v", sh, e, ok)
+	}
+	p.seedDone[7] = true
+	// control restarts and starts a load of its own: epoch 2, which is lower
+	ctl.setPlan(planOf(2, 9), time.Now())
+	sh, e, ok := p.nextShard()
+	if !ok || sh != 9 || e != 2 {
+		t.Fatalf("the producer ignored a plan with a lower epoch: %v %v %v", sh, e, ok)
+	}
+	if hb := p.heartbeat(); hb.SeedEpoch != 2 || len(hb.SeedDone) != 0 {
+		t.Fatalf("what the producer finished in the old load was kept: %+v", hb)
+	}
+	// epoch 0 is no load (or a plan gone stale): it changes nothing
+	ctl.setPlan(protocol.Plan{}, time.Now())
+	if _, _, ok := p.nextShard(); ok {
+		t.Fatal("a shard from a plan with no load")
+	}
+	if p.seedEpoch != 2 {
+		t.Fatalf("epoch 0 reset the producer's epoch to %d", p.seedEpoch)
+	}
+}
+
+// What a producer counted in one load is not reported under the next one's epoch.
+func TestCountersDoNotCrossEpochs(t *testing.T) {
+	ctl := NewControl("http://unused.invalid", "tok")
+	p := &Producer{Ctl: ctl}
+	p.initSeed()
+	ctl.setPlan(planOf(1, 3), time.Now())
+	p.nextShard()
+	p.seedErrs.Add(5)
+	p.seedDone[3], p.seedRecs[3] = true, 100
+	ctl.setPlan(planOf(2, 3), time.Now())
+	p.nextShard()
+	hb := p.heartbeat()
+	if hb.SeedEpoch != 2 || hb.SeedErrors != 0 || len(hb.SeedDone) != 0 || len(hb.SeedRecords) != 0 {
+		t.Fatalf("the old load's counts are reported under the new epoch: %+v", hb)
+	}
+	// and a shard of the old load that ends late adds nothing to the new one
+	fs := &fakeSender{fail: true}
+	codec, _ := NewCodec(1)
+	cat, _ := catalog.New(1)
+	late := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, seedEpoch: 2}
+	late.initSeed()
+	ctl.setPlan(planOf(1, 3), time.Now()) // this shard was loaded for epoch 1
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+	_, _ = late.loadShard(ctx, 3, 1)
+	if hb := late.heartbeat(); hb.SeedErrors != 0 {
+		t.Fatalf("an old load's failures were counted in the new one: %+v", hb)
+	}
+}
+
+func TestLostLeaseDoesNotBackOff(t *testing.T) {
+	ctl := NewControl("http://unused.invalid", "tok")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keepFresh(ctx, ctl, func() protocol.Plan { return planOf(1, 3) })
+	var mu sync.Mutex
+	var at []time.Time
+	p := &Producer{Ctl: ctl, SeedBackoffMin: 300 * time.Millisecond, SeedBackoffMax: time.Second}
+	p.loadFn = func(context.Context, int, int) (int64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		at = append(at, time.Now())
+		if len(at) <= 3 {
+			return 0, errLeaseLost
+		}
+		return 1, nil
+	}
+	go p.seedLoop(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(at)
+		mu.Unlock()
+		if n >= 4 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(at) < 4 || at[3].Sub(at[0]) > 250*time.Millisecond {
+		t.Fatalf("a lost lease made the task wait: %d attempts over %v", len(at), at[len(at)-1].Sub(at[0]))
+	}
+}
+
+// A flush that fails is an error of the load, shown in the UI, not only a line in the log.
+func TestFlushFailureIsCounted(t *testing.T) {
+	cat, _ := catalog.New(1)
+	codec, _ := NewCodec(1)
+	fs := &fakeSender{flushErr: errors.New("broker unreachable")}
+	ctl := NewControl("http://unused.invalid", "tok")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keepFresh(ctx, ctl, func() protocol.Plan {
+		return protocol.Plan{SeedEpoch: 1, SeedShards: []int{3}, SeedRate: SeedRecordsPerSec}
+	})
+	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, seedEpoch: 1}
+	p.initSeed()
+	if _, err := p.loadShard(ctx, 3, 1); err == nil {
+		t.Fatal("a failed flush was not an error")
+	}
+	if hb := p.heartbeat(); hb.SeedErrors < 1 || len(hb.SeedDone) != 0 {
+		t.Fatalf("%+v", hb)
+	}
+}
+
+// The shard is taken away while its flush is running (up to 30 s): the producer notices, and
+// does not report it done.
+func TestLeaseIsCheckedDuringTheFlush(t *testing.T) {
+	cat, _ := catalog.New(1)
+	codec, _ := NewCodec(1)
+	fs := &fakeSender{linger: true, flushWaits: true}
+	ctl := NewControl("http://unused.invalid", "tok")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var taken atomic.Bool
+	keepFresh(ctx, ctl, func() protocol.Plan {
+		if taken.Load() {
+			return protocol.Plan{SeedEpoch: 1}
+		}
+		return protocol.Plan{SeedEpoch: 1, SeedShards: []int{3}, SeedRate: SeedRecordsPerSec}
+	})
+	p := &Producer{Ctl: ctl, Sender: fs, Codec: codec, Catalog: cat, seedEpoch: 1}
+	p.initSeed()
+	go func() { time.Sleep(1200 * time.Millisecond); taken.Store(true) }() // after the pacer is done (0.6 s)
+	start := time.Now()
+	_, err := p.loadShard(ctx, 3, 1)
+	if !errors.Is(err, errLeaseLost) {
+		t.Fatalf("err %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("took %v: the flush was not cut short", time.Since(start))
+	}
+}
+
+// The plan's age is measured on the monotonic clock, so a step of the wall clock cannot make
+// a fresh plan stale or keep an old one.
+func TestPlanAgeIsMonotonic(t *testing.T) {
+	srv := controlStub(t, func() protocol.Plan { return protocol.Plan{Run: true} }, nil)
+	defer srv.Close()
+	c := NewControl(srv.URL, "tok")
+	if err := c.Poll(context.Background(), protocol.Heartbeat{}); err != nil {
+		t.Fatal(err)
+	}
+	if at := c.latest.Load().at; !strings.Contains(at.String(), "m=") {
+		t.Fatalf("the plan's arrival time %q has no monotonic reading", at.String())
+	}
+}
+
+// At stop the client is closed under the events still being produced: that is not a failed
+// record.
+func TestClientClosedAtStopIsNotAProduceError(t *testing.T) {
+	cat, _ := catalog.New(1)
+	codec, _ := NewCodec(1)
+	fs := &fakeSender{hook: func(int) error { return kgo.ErrClientClosed }}
+	p := &Producer{Sender: fs, Codec: codec, Catalog: cat}
+	p.send(context.Background(), "SKU-0000001", "LOC-0001", 1, &p.produced, &p.produceErrs, nil, nil)
+	if hb := p.heartbeat(); hb.ProduceErrors != 0 {
+		t.Fatalf("ErrClientClosed counted as %d produce errors", hb.ProduceErrors)
 	}
 }

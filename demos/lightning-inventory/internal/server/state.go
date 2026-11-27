@@ -200,13 +200,16 @@ func (s *Service) Latency(ctx context.Context, minutes int) (map[string]*cw.Seri
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), latencyTimeout)
 	defer cancel()
 	call.series, call.err = s.readLatency(rctx, now, win)
+	// Stamped when the read ended, not when it began: a read that took its whole timeout
+	// would otherwise be cached already as old as the error TTL (or most of the success TTL).
+	done := s.o.Now()
 	s.mu.Lock()
 	delete(s.latFly, win)
 	if call.err == nil {
-		s.latCache[win] = latEntry{at: now, series: call.series}
+		s.latCache[win] = latEntry{at: done, series: call.series}
 		delete(s.latErr, win)
 	} else {
-		s.latErr[win] = latErrEntry{at: now, err: call.err}
+		s.latErr[win] = latErrEntry{at: done, err: call.err}
 	}
 	s.mu.Unlock()
 	close(call.done)
