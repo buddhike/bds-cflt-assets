@@ -337,7 +337,7 @@ run "service_accounts_are_split" {
   }
 
   assert {
-    condition     = confluent_role_binding.control_cluster_read.principal == "User:sa-control" && confluent_role_binding.control_cluster_read.role_name == "DeveloperRead" && confluent_role_binding.control_cluster_read.crn_pattern == confluent_kafka_cluster.demo.rbac_crn && confluent_role_binding.control_metrics.principal == "User:sa-control" && confluent_role_binding.control_metrics.role_name == "MetricsViewer" && confluent_role_binding.control_metrics.crn_pattern == confluent_kafka_cluster.demo.rbac_crn
+    condition     = confluent_role_binding.control_cluster_read.principal == "User:sa-control" && confluent_role_binding.control_cluster_read.role_name == "DeveloperRead" && endswith(confluent_role_binding.control_cluster_read.crn_pattern, "/topic=*") && confluent_role_binding.control_metrics.principal == "User:sa-control" && confluent_role_binding.control_metrics.role_name == "MetricsViewer" && confluent_role_binding.control_metrics.crn_pattern == confluent_kafka_cluster.demo.rbac_crn
     error_message = "the control task reads the topic's table status and the cluster's metrics, and changes nothing"
   }
 

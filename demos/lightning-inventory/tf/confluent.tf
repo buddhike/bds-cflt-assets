@@ -116,11 +116,13 @@ resource "confluent_role_binding" "query_schema_read" {
 
 # Reading a table's status (GET /rtce/v1/rtce-topics/...) answered 403 with DeveloperRead on
 # the topic. The Lightning Tables access-control page lists DeveloperRead at cluster scope,
-# not topic scope, for "Get metadata". This cluster holds only the demo's topic.
+# not topic scope, for "Get metadata". DeveloperRead needs a resource pattern (the bare
+# cluster CRN is refused with 400), so this is every topic of the cluster, which holds only
+# the demo's topic.
 resource "confluent_role_binding" "control_cluster_read" {
   principal   = "User:${confluent_service_account.control.id}"
   role_name   = "DeveloperRead"
-  crn_pattern = confluent_kafka_cluster.demo.rbac_crn
+  crn_pattern = "${confluent_kafka_cluster.demo.rbac_crn}/kafka=${confluent_kafka_cluster.demo.id}/topic=*"
 }
 
 # The control task reads Confluent's usage metrics for the table with this role, on the
