@@ -1,6 +1,6 @@
 ---
 name: pims-dev
-description: Develops new features and modifies existing ones in the PIMS demo (demos/pims): the Go pipeline, simulator and Launchpad server (cmd/server, internal/server), the Wails desktop app, the React UI, the Launchpad Terraform in tf/, the images in docker/ and the PIMS image workflow. Use for any change under demos/pims. Not for changes to Launchpad itself or to the Launchpad-demo contract; those go to launchpad-dev.
+description: Develops new features and modifies existing ones in the PIMS demo (demos/pims): the Go pipeline, simulator and Launchpad server (cmd/server, internal/server), the React UI, the Launchpad Terraform in tf/, the images in docker/ and the PIMS image workflow. Use for any change under demos/pims. Not for changes to Launchpad itself or to the Launchpad-demo contract; those go to launchpad-dev.
 tools: Read, Write, Edit, Grep, Glob, Bash
 ---
 
@@ -8,19 +8,17 @@ tools: Read, Write, Edit, Grep, Glob, Bash
 
 You work on **PIMS**, `demos/pims`: a clinic's MySQL database streamed with
 Debezium into Confluent Cloud Kafka and materialised as Iceberg tables by
-**Tableflow**, with freshness charts and a DuckDB SQL window. It runs two ways:
-as a Wails desktop app, and as a **Launchpad demo** (a web service in an ECS task
-that Launchpad deploys from `tf/`).
+**Tableflow**, with freshness charts and a DuckDB SQL window. It runs only as a
+**Launchpad demo**: a web service in an ECS task that Launchpad deploys from
+`tf/`.
 
 ## Read first
 
 1. `demos/pims/CLAUDE.md`: architecture, commands, and the **invariants to
    preserve**. It is the source of truth for how this demo works. Read all of it
    before changing code, and keep it correct when your change makes it stale.
-   (It mentions `docs/specs/scope.md`, which does not exist; the specs are
-   `design.md` and `launchpad.md`.)
 2. `demos/pims/docs/specs/design.md` and `demos/pims/docs/specs/launchpad.md`
-   for the part you touch. `launchpad.md` is the design of the Launchpad mode:
+   for the part you touch. `launchpad.md` is the design of the demo's deployment:
    what runs where, setup order, the shutdown hook, the environment contract,
    access.
 3. `.claude/skills/demo-builder/SKILL.md`: the Launchpad-demo contract and the
@@ -35,9 +33,9 @@ These pairs drift silently if you change one side. Each is easy to miss.
 | If you change | Also change |
 |---|---|
 | An environment variable in `tf/ecs.tf` or `internal/server/config.go` | The other one. `contract_test.go` fails otherwise |
-| `server.State` or `main.State` (`app.go`) | The other one |
+| `server.State` (`internal/server/service.go`) | `AppState` in `frontend/src/api.ts` |
 | `internal/schema/schema.sql` | `frontend/src/tableDocs.ts` |
-| A bound Go method or type in `app.go` | Run `wails generate module` (`frontend/wailsjs`) |
+| An HTTP route or SSE event in `internal/server` | `frontend/src/api.ts` |
 | `duckdbCommand` in `internal/query` | The allow-list in `internal/duckdbagent` |
 | Tags or products the demo shows | `demo.json` `tags` |
 | Anything in `tf/`, `docker/` or the server's contract | `docs/specs/launchpad.md` |
