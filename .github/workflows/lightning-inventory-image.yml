@@ -1,0 +1,82 @@
+# Builds the container image of the Lightning inventory Launchpad demo and publishes
+# it to the GitHub Container Registry:
+#
+#   ghcr.io/<owner>/lightning-inventory   the control service, producer and query load generator in one Go binary (LIGHTNING_ROLE picks)
+#
+# Tags: the commit SHA on every push, the branch name, and `latest` on the default
+# branch. The Terraform in demos/lightning-inventory/tf takes the registry and the tag
+# as variables.
+#
+# It runs on every push, not only those that touch the demo: Launchpad deploys the
+# image tagged with the commit it downloaded, which is the head of the demos branch
+# whatever that commit changed.
+#
+# GitHub creates a package as private. Make it public once (the package's settings,
+# Change visibility), or give Terraform the credentials of a registry secret. Fargate
+# cannot pull a private GHCR image otherwise.
+name: Lightning inventory image
+
+on:
+  push:
+    branches: [main, launchpad]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightning-inventory-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: lightning-inventory
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write # push to GHCR with the workflow's own token
+    env:
+      IMAGE: lightning-inventory
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing after this step pushes to the repository: do not leave its token in .git/config.
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          # The action lowercases the image name, which GHCR requires.
+          images: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE }}
+          # No "sha-" prefix (the action's default): the tag is the bare commit SHA, which is
+          # what Launchpad passes to Terraform as launchpad_ref.
+          tags: |
+            type=sha,format=long,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE }}
+            org.opencontainers.image.description=Lightning inventory, a Launchpad demo of Confluent Cloud Lightning Tables queried by SKU and by location
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: demos/lightning-inventory
+          file: demos/lightning-inventory/docker/Dockerfile
+          # Fargate in the Terraform runs on x86_64.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
+          # Provenance and an SBOM make the registry show the build's origin.
+          provenance: mode=max
+          sbom: true
