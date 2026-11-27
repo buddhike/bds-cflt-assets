@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,20 @@ func TestQueries(t *testing.T) {
 	got := LocationsQuery("t", "SKU-1", []string{"LOC-1", "LOC-2"})
 	if got != "SELECT sku, location_id, quantity FROM `t` WHERE sku = 'SKU-1' AND location_id IN ('LOC-1', 'LOC-2')" {
 		t.Fatal(got)
+	}
+	locs := make([]string, 45)
+	for i := range locs {
+		locs[i] = fmt.Sprintf("L%d", i)
+	}
+	got = LocationsQuery("t", "S", locs)
+	if n := strings.Count(got, "location_id IN ("); n != 3 || !strings.Contains(got, "AND (location_id IN ('L0', ") || !strings.HasSuffix(got, "'L44'))") {
+		t.Fatal(got)
+	}
+	if !strings.Contains(got, "'L19') OR location_id IN ('L20'") || !strings.Contains(got, "'L39') OR location_id IN ('L40'") {
+		t.Fatal("lists of 20", got)
+	}
+	if strings.Contains(LocationsQuery("t", "S", locs[:20]), "OR") {
+		t.Fatal("twenty locations are one list")
 	}
 	if !ValidTopic("inventory_positions") || ValidTopic("a-b") || ValidTopic("`x") {
 		t.Fatal("topic validation")
