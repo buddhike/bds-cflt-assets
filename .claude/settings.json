@@ -1,9 +1,20 @@
 {
   "disableClaudeAiConnectors": true,
-  "permissions": {
-    "blockReadsOutsideWorkingDirectories": true
-  },
   "sandbox": {
-    "enabled": true
+    "enabled": true,
+    "filesystem": {
+      "denyRead": ["/"],
+      "allowRead": ["."]
+    },
+    "credentials": {
+      "files": [
+        { "path": "~/.aws/credentials", "mode": "deny" },
+        { "path": "~/.ssh", "mode": "deny" }
+      ],
+      "envVars": [
+        { "name": "GITHUB_TOKEN", "mode": "deny" },
+        { "name": "NPM_TOKEN", "mode": "deny" }
+      ]
+    }
   }
 }
