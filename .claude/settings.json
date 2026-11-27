@@ -1,0 +1,6 @@
+{
+  "disableClaudeAiConnectors": true,
+  "permissions": {
+    "blockReadsOutsideWorkingDirectories": true
+  }
+}
