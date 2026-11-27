@@ -9,7 +9,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 src="$root/libs/design/graphite.css"
-apps=(demos/launchpad demos/pims demos/automated-api-diagnosis)
+apps=(demos/launchpad demos/pims demos/automated-api-diagnosis demos/lightning-inventory)
 
 status=0
 for app in "${apps[@]}"; do
