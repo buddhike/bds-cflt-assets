@@ -44,7 +44,7 @@ Sources are Confluent's documentation pages under `https://docs.confluent.io/clo
 3. **The numeric rate limit**, the **maximum SQL length** (a 2000-location `IN` list is about 22 KB), and whether `IN` has a size limit. Errors are counted per scenario, so a limit shows as an error rate.
 4. How long enabling and deleting take (documented only as "several minutes").
 5. **Whether the provider waits for the table to be ACTIVE** before `terraform apply` returns. The resource has create and delete timeouts, which suggests it waits, but nothing says so. The control task reads the phase and the UI gates the loads on ACTIVE either way.
-6. **Which role reads a table's status** (`GET /rtce/v1/rtce-topics/{name}`). The documents list the roles that manage and that query, not that view. The control task's service account has `DeveloperRead` on the topic (and `MetricsViewer` on the cluster); if the read answers 403 the UI shows the error and never opens the gate. See the first-launch checklist.
+6. **Which role reads a table's status** (`GET /rtce/v1/rtce-topics/{name}`). The documents list the roles that manage and that query, not that view. The control task's service account has `DeveloperRead` and `MetricsViewer` on the cluster (`DeveloperRead` on the topic alone answered 403 in the first launch; the access-control page lists cluster scope for "Get metadata"); if the read answers 403 the UI shows the error and never opens the gate. See the first-launch checklist.
 7. **Whether the topic can be deleted the moment the table's delete returns.** Terraform destroys the table first (the workers wait on it, it waits on the topic), then a `time_sleep` of 60 s, then the topic.
 8. Cost: only "usage-based billing" (compute, scanned bytes, storage). Scanned bytes grow with query rate and with how many rows a query scans.
 
@@ -144,7 +144,7 @@ Launchpad runs `terraform destroy`: the workers, the table, a 60 s pause, the to
 | `LIGHTNING_WORKER_TOKEN` (secret) | x | x | x | `/internal/*` only |
 | `LIGHTNING_KAFKA_API_KEY`, `LIGHTNING_KAFKA_API_SECRET` (secret) | | x | | Kafka cluster key |
 | `LIGHTNING_GLOBAL_API_KEY`, `LIGHTNING_GLOBAL_API_SECRET` (secret) | | | x | Queries. Global key of the query service account (`DeveloperRead`) |
-| `LIGHTNING_CLOUD_API_KEY`, `LIGHTNING_CLOUD_API_SECRET` (secret) | x | | | Metrics API and the table's status. Cloud key of the control service account (`MetricsViewer`, `DeveloperRead` on the topic): read-only |
+| `LIGHTNING_CLOUD_API_KEY`, `LIGHTNING_CLOUD_API_SECRET` (secret) | x | | | Metrics API and the table's status. Cloud key of the control service account (`MetricsViewer`, `DeveloperRead` on the cluster): read-only |
 
 Bounds that are code, not configuration (the cluster is billed): events 1..200 per second (default 10), queries 1..1000 per second (default 50), seed rate 25,000 per second, locations per query 1..2000, 512 queries in flight per task. The browser sets only the two rates, and whether each load runs.
 
@@ -173,14 +173,14 @@ No task holds an administrator role. Terraform's own provider credentials (the l
 | provisioner | `EnvironmentAdmin` on the demo's environment | Kafka (cluster-scoped), Schema Registry | **Terraform only**: used to create the topic and the schema. Not in Secrets Manager, not in any task |
 | producer | `DeveloperWrite` on the topic | Kafka (cluster-scoped) | producer tasks |
 | query | `DeveloperRead` on the topic, `DeveloperRead` on Schema Registry subjects (the registry holds this demo's one schema) | Global | query tasks |
-| control | `MetricsViewer` on the cluster, `DeveloperRead` on the topic | Cloud | control task |
+| control | `MetricsViewer` and `DeveloperRead` on the cluster | Cloud | control task |
 
 `tf/tests` and `contract_test.go` check the split (a single `EnvironmentAdmin`, on the provisioner; each key owned by its role's account; the provisioner's keys referenced nowhere but Terraform).
 
 ### Accepted risks
 
 * The provisioner's `EnvironmentAdmin` is broad. It could be narrowed to `CloudClusterAdmin` on the cluster plus `ResourceOwner` on the value subject, which has not been tried against a live account; keeping the broad role on a service account whose keys only Terraform uses avoids a launch failing on an untested role. Its keys are in Terraform state like every other key, and the state lives in Launchpad's backend. The account is confined to this demo's environment, which holds nothing else, and is deleted with it.
-* The control account's `DeveloperRead` on the topic is a guess at what reading a table's status needs (not documented, item 6 of "Not documented"). It is a read role and the key is a Cloud key, not the Global key the query endpoint accepts, so it gives no query access of its own. If a launch shows another role is needed, widening it is an owner decision.
+* The control account's `DeveloperRead` is on the cluster, not the topic: the topic-scoped role answered 403 for the status read (not documented, item 6 of "Not documented"; the access-control page lists cluster scope for "Get metadata"). The cluster holds only this demo's topic. It is a read role and the key is a Cloud key, not the Global key the query endpoint accepts, so it gives no query access of its own. If a launch shows another role is needed, widening it is an owner decision.
 * The query account reads every subject of the registry.
 
 ## Launchpad contract
@@ -208,7 +208,7 @@ An update is `terraform apply` over the live demo. **The table is in Terraform n
 ## First launch checklist (only possible in the cloud)
 
 1. The provider creates the table (`confluent_rtce_topic`) with the launching user's Cloud key, and whether `apply` returns before the table is ACTIVE.
-2. The control task's Cloud key can read the table's status (`GET /rtce/v1/rtce-topics/...`) with `DeveloperRead` on the topic and `MetricsViewer`. A 403 here needs an owner decision (a wider role) and blocks the gate.
+2. The control task's Cloud key can read the table's status (`GET /rtce/v1/rtce-topics/...`) with `DeveloperRead` on the cluster and `MetricsViewer` (`DeveloperRead` on the topic alone gave 403). A 403 here needs an owner decision (a wider role) and blocks the gate.
 3. Global key (query service account, `DeveloperRead` on the topic and the subjects) authenticates to `sql.<region>.aws.confluent.cloud` for a Standard cluster (the two doc pages disagree).
 4. The table reaches ACTIVE and answers `by_sku` (200, rows).
 5. Whether the table has the loaded data (backfill question) and how the by-sku query behaves at 10 million rows.

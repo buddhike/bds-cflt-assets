@@ -58,7 +58,7 @@ data "confluent_schema_registry_cluster" "demo" {
 #                one broad role, and it is accepted (docs/specs/launchpad.md, "Accepted risks").
 #   producer     DeveloperWrite on the topic.
 #   query        DeveloperRead on the topic and on Schema Registry.
-#   control      MetricsViewer on the cluster and DeveloperRead on the topic: it reads the
+#   control      MetricsViewer and DeveloperRead on the cluster: it reads the
 #                table's status and Confluent's usage metrics, and changes nothing.
 #
 # The Lightning Table itself is created by the provider's own credentials (the launching
@@ -114,10 +114,13 @@ resource "confluent_role_binding" "query_schema_read" {
   crn_pattern = "${data.confluent_schema_registry_cluster.demo.resource_name}/subject=*"
 }
 
-resource "confluent_role_binding" "control_topic_read" {
+# Reading a table's status (GET /rtce/v1/rtce-topics/...) answered 403 with DeveloperRead on
+# the topic. The Lightning Tables access-control page lists DeveloperRead at cluster scope,
+# not topic scope, for "Get metadata". This cluster holds only the demo's topic.
+resource "confluent_role_binding" "control_cluster_read" {
   principal   = "User:${confluent_service_account.control.id}"
   role_name   = "DeveloperRead"
-  crn_pattern = local.topic_crn
+  crn_pattern = confluent_kafka_cluster.demo.rbac_crn
 }
 
 # The control task reads Confluent's usage metrics for the table with this role, on the
@@ -233,7 +236,7 @@ resource "confluent_api_key" "control_cloud" {
     kind        = confluent_service_account.control.kind
   }
 
-  depends_on = [confluent_role_binding.control_metrics, confluent_role_binding.control_topic_read]
+  depends_on = [confluent_role_binding.control_metrics, confluent_role_binding.control_cluster_read]
 }
 
 # A key is not always usable the moment its create call returns. Using it at once, to

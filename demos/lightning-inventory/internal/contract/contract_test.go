@@ -354,7 +354,7 @@ func TestNoTaskHoldsAnAdministratorKey(t *testing.T) {
 		"producer_write":     `"DeveloperWrite"`,
 		"query_read":         `"DeveloperRead"`,
 		"query_schema_read":  `"DeveloperRead"`,
-		"control_topic_read": `"DeveloperRead"`,
+		"control_cluster_read": `"DeveloperRead"`,
 		"control_metrics":    `"MetricsViewer"`,
 	} {
 		blk := regexp.MustCompile(`(?s)resource "confluent_role_binding" "` + binding + `" \{.*?\n}\n`).FindString(conf)
