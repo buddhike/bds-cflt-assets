@@ -32,9 +32,6 @@ import (
 	"pims/internal/terraform"
 )
 
-// ErrManaged is returned for anything that deletes the demo: Launchpad does that.
-var ErrManaged = errors.New("this demo is managed by Launchpad: tear it down there")
-
 // Timeouts for the waits. Connect is a JVM and takes a minute or two to start.
 const (
 	servicesTimeout  = 10 * time.Minute
@@ -50,8 +47,8 @@ var Titles = map[pipeline.StepID]string{
 	pipeline.StepTableflow: "Enable Tableflow",
 }
 
-// NewDeps wires the pipeline for the ECS task. It is the desktop wiring with
-// Terraform and docker replaced by what Launchpad and the task already provide.
+// NewDeps wires the pipeline for the ECS task. It uses what Launchpad and
+// the task already provide in place of Terraform and docker.
 func NewDeps(cfg Config, log *slog.Logger) (pipeline.Deps, error) {
 	agent, err := duckdbagent.NewClient(cfg.AgentURL, cfg.AgentToken)
 	if err != nil {
@@ -88,7 +85,6 @@ func NewDeps(cfg Config, log *slog.Logger) (pipeline.Deps, error) {
 			out.TableflowEnabled = true
 			return out, nil
 		},
-		Destroy: func(context.Context, config.Credentials) error { return ErrManaged },
 		StartLocal: func(ctx context.Context, _ terraform.Outputs) (compose.MySQLSecrets, error) {
 			ctx, cancel := context.WithTimeout(ctx, servicesTimeout)
 			defer cancel()
@@ -106,7 +102,6 @@ func NewDeps(cfg Config, log *slog.Logger) (pipeline.Deps, error) {
 				Generation:       gen,
 			}, nil
 		},
-		StopLocal: func(context.Context, bool) error { return ErrManaged },
 		PrepareDB: func(ctx context.Context, s compose.MySQLSecrets) (sim.Store, io.Closer, error) {
 			return prepareDB(ctx, cfg, s, log)
 		},
@@ -129,7 +124,6 @@ func NewDeps(cfg Config, log *slog.Logger) (pipeline.Deps, error) {
 			}
 			return c.WaitRunning(ctx)
 		},
-		StopCDC: func(context.Context, compose.MySQLSecrets) error { return ErrManaged },
 		WaitSchemas: func(ctx context.Context, out terraform.Outputs) error {
 			ctx, cancel := context.WithTimeout(ctx, schemasTimeout)
 			defer cancel()

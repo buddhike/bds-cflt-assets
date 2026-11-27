@@ -405,8 +405,8 @@ func TestCatalogNeverPrintsItsSecret(t *testing.T) {
 	}
 }
 
-// dockerRun runs the DuckDB image directly, as `docker compose exec` would
-// in the running stack, so the tests need no compose project.
+// dockerRun runs the DuckDB image directly, as the agent would in the task,
+// so the tests need no running stack.
 type dockerRun struct{}
 
 func (dockerRun) ExecLimit(ctx context.Context, _ string, stdin io.Reader, redact []string, maxStdout int, cmd ...string) ([]byte, error) {
@@ -414,7 +414,7 @@ func (dockerRun) ExecLimit(ctx context.Context, _ string, stdin io.Reader, redac
 	var stdout, stderr bytes.Buffer
 	c.Stdin, c.Stdout, c.Stderr = stdin, &stdout, &stderr
 	if err := c.Run(); err != nil {
-		// As compose.Project does, so the test sees what the operator would.
+		// As duckdbagent.Client does, so the test sees what the operator would.
 		msg := stderr.String()
 		for _, r := range redact {
 			msg = strings.ReplaceAll(msg, r, "[REDACTED]")
@@ -432,7 +432,7 @@ func (dockerRun) ExecLimit(ctx context.Context, _ string, stdin io.Reader, redac
 
 // TestRunInDuckDB runs queries in the real DuckDB image and checks what the
 // operator would see. It needs Docker and the pims-duckdb image built by
-// `docker compose build duckdb`.
+// `docker build -f docker/Dockerfile --target duckdb -t pims-duckdb .`.
 func TestRunInDuckDB(t *testing.T) {
 	if err := exec.Command("docker", "image", "inspect", "pims-duckdb").Run(); err != nil {
 		t.Skip("pims-duckdb image not built")

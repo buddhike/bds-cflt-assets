@@ -76,25 +76,15 @@ func fakeDeps(r *recorder) Deps {
 			}
 			return terraform.Outputs{EnvironmentID: "env-1", KafkaClusterID: "lkc-1", Topics: []string{"patients"}, TableflowEnabled: o.EnableTableflow}, nil
 		},
-		Destroy: func(context.Context, config.Credentials) error { r.add("destroy"); return nil },
 		StartLocal: func(context.Context, terraform.Outputs) (compose.MySQLSecrets, error) {
 			r.add("up")
 			return compose.MySQLSecrets{Generation: "g1"}, nil
-		},
-		StopLocal: func(_ context.Context, rm bool) error {
-			if rm {
-				r.add("down-volumes")
-			} else {
-				r.add("down")
-			}
-			return nil
 		},
 		PrepareDB: func(context.Context, compose.MySQLSecrets) (sim.Store, io.Closer, error) {
 			r.add("schema")
 			return nopStore{}, closerFunc(func() error { r.add("db-close"); return nil }), nil
 		},
 		StartCDC:    func(context.Context, terraform.Outputs, compose.MySQLSecrets) error { r.add("cdc"); return nil },
-		StopCDC:     func(context.Context, compose.MySQLSecrets) error { r.add("cdc-delete"); return nil },
 		WaitSchemas: func(context.Context, terraform.Outputs) error { r.add("schemas"); return nil },
 		NewQuerier: func(c config.Credentials, o terraform.Outputs) (latency.Querier, error) {
 			if c != creds || o.KafkaClusterID != "lkc-1" {
@@ -199,28 +189,6 @@ func TestSimulatorNeedsSetup(t *testing.T) {
 	}
 }
 
-func TestTeardownDestroysEverythingEvenIfLocalStopFails(t *testing.T) {
-	r := &recorder{}
-	deps := fakeDeps(r)
-	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
-	if err := p.Setup(context.Background(), creds); err != nil {
-		t.Fatal(err)
-	}
-	p.deps.StopLocal = func(context.Context, bool) error { r.add("down-failed"); return errors.New("docker gone") }
-
-	err := p.Teardown(context.Background(), creds)
-	if err == nil {
-		t.Fatal("Teardown() = nil, want the local error reported")
-	}
-	got := r.list()
-	if !slices.Contains(got, "destroy") || !slices.Contains(got, "db-close") || !slices.Contains(got, "cdc-delete") {
-		t.Fatalf("calls = %v, want connector delete, db close and cloud destroy", got)
-	}
-	if p.SimStats().Running {
-		t.Fatal("simulator still running after teardown")
-	}
-}
-
 func TestCloseDuringSetupStartsNothingNew(t *testing.T) {
 	r := &recorder{}
 	deps := fakeDeps(r)
@@ -248,27 +216,6 @@ func TestCloseDuringSetupStartsNothingNew(t *testing.T) {
 	if p.SimStats().Running {
 		t.Fatal("simulator started after Close")
 	}
-}
-
-func TestTeardownAfterPartialSetupDeletesConnector(t *testing.T) {
-	r := &recorder{}
-	deps := fakeDeps(r)
-	deps.WaitSchemas = func(context.Context, terraform.Outputs) error { return errors.New("timed out") }
-	p := New(deps, slog.New(slog.DiscardHandler), nil, nil)
-	if err := p.Setup(context.Background(), creds); err == nil {
-		t.Fatal("Setup() = nil, want failure")
-	}
-	if err := p.Teardown(context.Background(), creds); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(r.list(), "cdc-delete") {
-		t.Fatalf("calls = %v, want the connector deleted after a partial setup", r.list())
-	}
-	// The pipeline is usable again after teardown.
-	if err := p.Setup(context.Background(), creds); errors.Is(err, ErrClosed) {
-		t.Fatal("Setup after Teardown must not report closed")
-	}
-	p.Close()
 }
 
 func TestSetupReusesOperatorRate(t *testing.T) {
@@ -374,19 +321,6 @@ func TestQueryBeforeTableflowIsPlainDuckDB(t *testing.T) {
 func TestQueryStopsWithTheDemo(t *testing.T) {
 	r := &recorder{}
 	p := New(fakeDeps(r), slog.New(slog.DiscardHandler), nil, nil)
-	if err := p.Setup(context.Background(), creds); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Teardown(context.Background(), creds); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("Query() after teardown = %v, want ErrNotReady", err)
-	}
-	if p.QueryInfo().Catalog != "" {
-		t.Fatal("QueryInfo() must be empty after teardown")
-	}
-
 	if err := p.Setup(context.Background(), creds); err != nil {
 		t.Fatal(err)
 	}

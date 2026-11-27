@@ -13,7 +13,6 @@ function summarize(steps: Step[], busy: AppState['busy']): {tone: Tone; text: st
   const done = steps.filter((s) => s.status === 'done').length;
   const running = steps.find((s) => s.status === 'running');
   const failed = steps.find((s) => s.status === 'failed');
-  if (busy === 'teardown') return {tone: 'busy', text: 'Tearing down…', done};
   if (busy === 'setup') return {tone: 'busy', text: running ? `Setting up: ${running.title}` : 'Setting up…', done};
   if (failed) return {tone: 'bad', text: `Setup failed: ${failed.title}`, done};
   if (steps.length > 0 && done === steps.length) return {tone: 'ok', text: 'Ready', done};

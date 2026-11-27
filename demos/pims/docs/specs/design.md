@@ -8,17 +8,21 @@ shows a MySQL database behind a patient information system being replicated,
 as it changes, into Iceberg tables with Confluent Cloud Tableflow, and how
 fresh those tables are while it happens.
 
+PIMS runs only as a Launchpad demo, in an ECS task that Launchpad deploys; see
+[launchpad.md](launchpad.md) for what runs where and how it is set up. This
+document describes the pipeline, the simulator and the UI.
+
 The demo is designed so that the operator brings almost nothing:
 
 - **No source system.** PIMS runs its own MySQL database and fills it with a
   simulated clinic, so there is no data to load and nothing to connect to.
-- **No infrastructure to prepare.** One desktop app (Wails, Go and React)
-  provisions Confluent Cloud, starts the local services, installs the schema,
-  configures CDC and turns Tableflow on, in the right order, from a single
-  Setup action. Setup is idempotent: after a failure or a relaunch it resumes
-  where things are.
-- **No tools to install.** Terraform is embedded and its binary is fetched on
-  demand, and every local service runs in Docker.
+- **No infrastructure to prepare.** Launchpad provisions Confluent Cloud and
+  the ECS task with Terraform. The server (Go, with the React UI embedded)
+  then installs the schema, configures CDC and turns Tableflow on, in the
+  right order, by itself. Setup is idempotent: after a failure or a restart it
+  resumes where things are.
+- **No tools to install.** Everything runs in the ECS task, and the operator
+  uses a browser.
 - **No storage to arrange.** Tableflow uses Confluent managed storage, so the
   operator needs no object store, bucket or cloud account beyond Confluent
   Cloud.
@@ -29,20 +33,19 @@ The demo is designed so that the operator brings almost nothing:
 
 | Input | Used for |
 |---|---|
-| Docker | Running MySQL, Kafka Connect and DuckDB locally |
 | Confluent Cloud API key and secret | Provisioning, and reading the Metrics API |
 | AWS region | Where the Kafka cluster and Tableflow storage are created |
 
-The operator enters the key, secret and region when the app launches. They
-are held in memory only, so after a relaunch they are entered again. Teardown
-removes everything PIMS created: the connector, the containers and the MySQL
-volume, and every Confluent Cloud resource.
+The operator gives Launchpad the key, secret and region when launching the
+demo. Tearing the demo down in Launchpad removes everything: PIMS disables
+Tableflow first, then Terraform destroys the Confluent Cloud resources and the
+ECS task.
 
 ### Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Local[Docker Compose]
+    subgraph Local[ECS task containers]
         MySQL[(MySQL)]
         DBZ[Debezium connector<br/>on Kafka Connect]
         DuckDB[DuckDB]
@@ -53,10 +56,11 @@ flowchart LR
         Iceberg[(Iceberg tables<br/>managed storage)]
         Metrics[Metrics API]
     end
-    App[PIMS Wails app<br/>setup, simulator, monitor]
+    App[PIMS server<br/>setup, simulator, monitor]
 
-    App -- provisions via Terraform --> CC
-    App -- composes and installs schema --> Local
+    Terraform[Terraform, run by Launchpad] -- provisions --> CC
+    App -- installs schema --> Local
+    App -- enables Tableflow --> CC
     App -- simulates events --> MySQL
     MySQL -- binlog --> DBZ
     DBZ -- CDC records --> Topics
@@ -76,16 +80,15 @@ not add a second one. There is no Flink or other unwrap step in between.
 
 ## Components
 
-PIMS is spread over three places: services in Docker on the operator's
-machine, resources in Confluent Cloud, and the app itself, which runs the
-simulation and the observability.
+PIMS is spread over three places: containers in the ECS task, resources in
+Confluent Cloud, and the server, which runs the simulation and the
+observability.
 
-### Local services (Docker Compose)
+### Task containers
 
-An embedded compose project is rendered into the app's workspace and run with
-the `docker compose` CLI under the project name `pims`. Published ports are
-bound to `127.0.0.1`, and secrets reach the containers through the process
-environment, never a file.
+`mysql`, `connect` and `duckdb` run beside the server in one ECS task, and
+reach each other on `127.0.0.1`. Secrets reach the containers through ECS
+secrets, never a file in an image.
 
 | Service | What it is | Role |
 |---|---|---|
@@ -99,8 +102,8 @@ database are never reused.
 
 ### Confluent Cloud
 
-Terraform, run in process through `terraform-exec`, provisions everything in
-one environment dedicated to the demo. It runs in two phases.
+Terraform, run by Launchpad, provisions everything in one environment
+dedicated to the demo, except Tableflow, which the server enables.
 
 | Resource | Notes |
 |---|---|
@@ -111,43 +114,38 @@ one environment dedicated to the demo. It runs in two phases.
 | API keys | One each for Kafka, Schema Registry and Tableflow, owned by the service account |
 | Tableflow | Enabled on each topic as an Iceberg table in managed storage |
 
-`<suffix>` is six random hex characters, generated the first time the app sets
-up Confluent Cloud and saved as `suffix` in `settings.json` in the workspace.
-Environment and service account names are unique within a Confluent Cloud
-organisation, so the suffix lets several operators run the demo in one account
-without colliding. It is kept across launches and after teardown, and is the
-only setting besides the AWS region that the app saves. Everything else the
-demo creates lives inside the operator's own environment and needs no suffix.
+`<suffix>` is six random hex characters. Environment and service account
+names are unique within a Confluent Cloud organisation, so the suffix lets
+several operators run the demo in one account without colliding. Everything
+else the demo creates lives inside the operator's own environment and needs no
+suffix.
 
-**Phase 1** creates everything except Tableflow. **Phase 2** enables Tableflow.
-They are separate because Tableflow cannot be enabled on a topic that has no
-schema, and Debezium registers a topic's schema only when it produces the
-topic's first record. Setup therefore starts CDC and the simulator, waits for
-the `<topic>-value` subjects to appear, and only then runs phase 2. Once
-enabled, Tableflow stays on, and changing the AWS region on existing state is
-refused.
+Tableflow is enabled apart from Terraform, because it cannot be enabled on a
+topic that has no schema, and Debezium registers a topic's schema only when it
+produces the topic's first record. Setup therefore starts CDC and the
+simulator, waits for the `<topic>-value` subjects to appear, and only then
+enables Tableflow through the Confluent Cloud API.
 
 The Metrics API is not provisioned. It is a Confluent Cloud service that the
 app reads, using the operator's own Cloud API key.
 
-### The PIMS app
+### The PIMS server
 
-The app is the control plane and also hosts the two long-running behaviours.
+The server is the control plane and also hosts the two long-running behaviours.
 
 - **Setup** runs these steps in order, reporting each to the UI:
-  1. Check Docker.
-  2. Provision Confluent Cloud (phase 1).
-  3. Start MySQL, Kafka Connect and DuckDB.
-  4. Install the MySQL schema.
-  5. Start the Debezium connector.
-  6. Start the simulator.
-  7. Wait for the topic schemas.
-  8. Enable Tableflow (phase 2).
-  9. Start the Tableflow metrics monitor.
+  1. Check the configuration and read the Confluent Cloud resources Terraform made.
+  2. Wait for MySQL, Kafka Connect and DuckDB.
+  3. Install the MySQL schema.
+  4. Start the Debezium connector.
+  5. Start the simulator.
+  6. Wait for the topic schemas.
+  7. Enable Tableflow.
+  8. Start the Tableflow metrics monitor.
 - **Simulator** writes the clinic's events to MySQL. See [Simulation](#simulation).
 - **Monitor** polls Tableflow's freshness metrics. See [Observability](#observability).
-- **Secrets** are handled narrowly. Confluent Cloud credentials reach Terraform
-  only through its process environment. Connector configs reference secrets as
+- **Secrets** are handled narrowly. Confluent Cloud credentials reach the server
+  only through the task's environment, from Secrets Manager. Connector configs reference secrets as
   `${env:…}`, so they are never posted to, or returned by, the Connect REST
   API. Credential values redact themselves when logged or serialised.
 
@@ -247,7 +245,7 @@ When the simulator starts it reads the database to rebuild its model: patients,
 booked slots, appointments awaiting check-in, open visits and the highest
 medical record number. The clock starts at the later of now and the latest
 business time already recorded, so it never runs backwards across restarts and
-a relaunched app carries on from the data that is there. If the database keeps
+a restarted server carries on from the data that is there. If the database keeps
 failing, for example because MySQL was stopped, the simulator stops after 20
 consecutive errors instead of spinning.
 
@@ -348,5 +346,5 @@ How it behaves:
 - The session has the demo's Tableflow API key loaded in order to read the
   catalog, so the SQL is trusted input from the operator. Do not run SQL you do
   not trust.
-- The Tableflow credentials come from the setup run, so after relaunching PIMS,
-  run setup again before querying. It resumes where things are.
+- The Tableflow credentials come from setup, so queries are refused until
+  setup's services step is done.

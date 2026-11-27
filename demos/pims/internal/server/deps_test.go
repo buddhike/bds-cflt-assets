@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"pims/internal/compose"
 	"pims/internal/config"
 	"pims/internal/duckdbagent"
 	"pims/internal/pipeline"
@@ -98,24 +97,6 @@ func TestDisableTableflowDisablesEveryTopic(t *testing.T) {
 	}
 	if !slices.Equal(api.disabled, cfg.Outputs.Topics) {
 		t.Errorf("disabled %v, want %v", api.disabled, cfg.Outputs.Topics)
-	}
-}
-
-func TestEverythingThatDeletesIsRefused(t *testing.T) {
-	cfg := testConfig(t)
-	d, err := NewDeps(cfg, quiet)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	for name, err := range map[string]error{
-		"destroy":   d.Destroy(ctx, cfg.Credentials()),
-		"stoplocal": d.StopLocal(ctx, true),
-		"stopcdc":   d.StopCDC(ctx, compose.MySQLSecrets{}),
-	} {
-		if !errors.Is(err, ErrManaged) {
-			t.Errorf("%s: err = %v, want ErrManaged", name, err)
-		}
 	}
 }
 

@@ -4,27 +4,11 @@ Patient Information Management System: a demo of how a clinic's operational
 database can be given a live analytical copy for business reporting, using
 Debezium and Confluent Cloud Tableflow.
 
-## Download
-
-| Platform | Download |
-|---|---|
-| macOS (Apple Silicon and Intel) | [pims_0.4.0_macos_universal.zip](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.4.0/pims_0.4.0_macos_universal.zip) |
-| Windows (x64) | [pims_0.4.0_windows_amd64.exe](https://github.com/buddhike/bds-cflt-assets/releases/download/pims-v0.4.0/pims_0.4.0_windows_amd64.exe) |
-
-> [!NOTE]
-> **macOS:** the app is not notarized, so macOS blocks a copy downloaded in a
-> browser. After unzipping, clear the quarantine flag once from Terminal, in the
-> folder that holds `pims.app`, then open the app:
->
-> ```sh
-> xattr -dr com.apple.quarantine pims.app
-> ```
-
 ## Run it with Launchpad
 
-Instead of the desktop app, PIMS can run in AWS as a [Launchpad](../launchpad/README.md)
-demo. Launch it from Launchpad, which deploys `tf/` with your Confluent Cloud
-key, and open the link it shows. The same UI runs in the browser.
+PIMS runs in AWS as a [Launchpad](../launchpad/README.md) demo. Launch it from
+Launchpad, which deploys `tf/` with your Confluent Cloud key, and open the link
+it shows. The UI runs in the browser.
 
 One ECS Fargate task runs four containers behind an Application Load Balancer:
 the Go server (simulator, UI and API in one binary), MySQL, Kafka Connect with
@@ -200,7 +184,7 @@ In the diagram, grey is what already exists and green is what is introduced.
 
 ```mermaid
 flowchart LR
-    subgraph Local["Runs locally (Docker Compose and the PIMS app)"]
+    subgraph Local["Runs in the ECS task"]
         App["Clinic application<br/>(simulated by PIMS)"]
         MySQL[("MySQL<br/>patients, appointments, visits")]
         DBZ["Debezium<br/>on Kafka Connect"]

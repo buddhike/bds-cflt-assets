@@ -2,7 +2,7 @@
 
 PIMS also runs as a [Launchpad](../../../launchpad/README.md) demo. Launchpad
 runs `tf/`, which creates the Confluent Cloud resources and deploys PIMS into
-ECS behind a load balancer. The desktop app is unchanged.
+ECS behind a load balancer. It is the only way to run PIMS.
 
 ## What runs where
 
@@ -22,7 +22,7 @@ Browser ─HTTPS─► CloudFront ─VPC origin─► internal ALB :80 ──►
   entry point.
 * MySQL lives on the task's ephemeral storage. The demo's data is lost if the
   task is replaced. Debezium state is keyed by the **task id** (the "MySQL
-  generation" of the desktop app), so a replaced task snapshots again under a
+  generation"), so a replaced task snapshots again under a
   new connector name instead of resuming offsets that no longer exist.
 
 ## Setup, in order
@@ -37,8 +37,8 @@ Terraform does not enable Tableflow. A topic needs a schema first, and Debezium
 registers a schema only when it sends the topic's first record, which is the
 app's doing. The app enables Tableflow itself.
 
-`pims-server` at start-up runs the desktop app's setup steps, with these
-differences: there is no Docker and no Terraform step. It waits for MySQL,
+`pims-server` at start-up runs the setup steps. There is no Docker and no
+Terraform step. It waits for MySQL,
 Connect and the DuckDB agent, installs the schema, registers the Debezium
 connector, starts the simulator and waits for the `<topic>-value` subjects in
 Schema Registry. It then enables Tableflow on each topic through the Confluent

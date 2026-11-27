@@ -22,8 +22,8 @@ import (
 	"pims/internal/terraform"
 )
 
-// ErrBusy is returned when a setup or teardown is already in progress.
-var ErrBusy = errors.New("another setup or teardown is in progress")
+// ErrBusy is returned when a setup is already in progress.
+var ErrBusy = errors.New("another setup is in progress")
 
 // ErrNotReady is returned when the simulator is used before setup has
 // prepared the database.
@@ -32,7 +32,7 @@ var ErrNotReady = errors.New("run setup first")
 // ErrQueryBusy is returned when a query is run while another is running.
 var ErrQueryBusy = errors.New("a query is already running")
 
-// ErrClosed is returned once the pipeline is closed or tearing down.
+// ErrClosed is returned once the pipeline is closed.
 var ErrClosed = errors.New("pipeline is shutting down")
 
 // DefaultRate is the event rate the simulator starts at during setup. Some
@@ -90,20 +90,17 @@ type StepState struct {
 	FinishedAt time.Time `json:"finishedAt,omitzero"`
 }
 
-// Deps are the operations the pipeline sequences. New wires the real
+// Deps are the operations the pipeline sequences. server.NewDeps wires the real
 // implementations; tests substitute fakes.
 type Deps struct {
 	CheckDocker func(ctx context.Context) error
 	Provision   func(ctx context.Context, c config.Credentials, o terraform.ApplyOptions) (terraform.Outputs, error)
-	Destroy     func(ctx context.Context, c config.Credentials) error
 	StartLocal  func(ctx context.Context, out terraform.Outputs) (compose.MySQLSecrets, error)
-	StopLocal   func(ctx context.Context, removeVolumes bool) error
 	PrepareDB   func(ctx context.Context, s compose.MySQLSecrets) (sim.Store, io.Closer, error)
 	StartCDC    func(ctx context.Context, out terraform.Outputs, s compose.MySQLSecrets) error
-	StopCDC     func(ctx context.Context, s compose.MySQLSecrets) error
 	WaitSchemas func(ctx context.Context, out terraform.Outputs) error
 	// DisableTableflow turns Tableflow off on the topics before their owner deletes
-	// them. Only server mode sets it: the desktop app's Terraform owns Tableflow too.
+	// them. The server sets it.
 	DisableTableflow func(ctx context.Context) error
 	// NewQuerier returns the reader of Tableflow's freshness metrics. The
 	// Metrics API takes a Cloud API key, so it gets the operator's.
@@ -114,19 +111,20 @@ type Deps struct {
 	PollInterval time.Duration
 	// Seed seeds the simulator; zero picks a time-based seed.
 	Seed uint64
-	// Titles replaces the display title of a step. The default titles describe
-	// the desktop app, which the server mode does not match.
+	// Titles replaces the display title of a step. The defaults name steps that
+	// run Docker and Terraform; the server overrides them for the ECS task,
+	// where Launchpad and the task provide those.
 	Titles map[StepID]string
 }
 
-// Pipeline runs setup and teardown and owns the simulator and monitor.
+// Pipeline runs setup and owns the simulator and monitor.
 type Pipeline struct {
 	deps      Deps
 	log       *slog.Logger
 	onStep    func(StepState)
 	onLatency func(latency.Result)
 
-	busy      sync.Mutex // held for the duration of Setup/Teardown
+	busy      sync.Mutex // held for the duration of Setup
 	queryBusy sync.Mutex // held while a query runs
 
 	mu          sync.Mutex
@@ -136,9 +134,8 @@ type Pipeline struct {
 	stopMonitor context.CancelFunc
 	monitorDone chan struct{}
 	outputs     *terraform.Outputs
-	secrets     *compose.MySQLSecrets
-	// closed is set by Close and during Teardown so nothing new (simulator,
-	// monitor, connection) starts while resources are being released.
+	// closed is set by Close so nothing new (simulator, monitor, connection)
+	// starts while resources are being released.
 	closed bool
 	// rate is the last event rate requested, reused when setup restarts
 	// the simulator.
@@ -262,12 +259,7 @@ func (p *Pipeline) Setup(ctx context.Context, creds config.Credentials) error {
 			if err != nil {
 				return "", err
 			}
-			// Recorded now so a Teardown after a later failure still
-			// deletes the connector.
 			secrets = s
-			p.mu.Lock()
-			p.secrets = &s
-			p.mu.Unlock()
 			return "", nil
 		}},
 		{StepSchema, func() (string, error) {
@@ -393,7 +385,7 @@ func (p *Pipeline) simulator() (*sim.Simulator, error) {
 }
 
 // StartSimulation starts generating events at rate events per second. The
-// simulation runs until StopSimulation, Teardown or Close, independent of
+// simulation runs until StopSimulation or Close, independent of
 // ctx's lifetime beyond startup.
 func (p *Pipeline) StartSimulation(ctx context.Context, rate float64) error {
 	s, err := p.simulator()
@@ -403,8 +395,8 @@ func (p *Pipeline) StartSimulation(ctx context.Context, rate float64) error {
 	p.mu.Lock()
 	p.rate = rate
 	p.mu.Unlock()
-	// Detach from the caller's context: a Wails call context ends when the
-	// call returns, but the simulation should keep running.
+	// Detach from the caller's context: a request context ends when the
+	// request returns, but the simulation should keep running.
 	return s.Start(context.WithoutCancel(ctx), rate)
 }
 
@@ -491,53 +483,8 @@ func (p *Pipeline) Query(ctx context.Context, sql string) (query.Result, error) 
 	return p.deps.RunQuery(ctx, *out, sql)
 }
 
-// Teardown stops everything and deletes all resources: the local
-// containers and MySQL volume, and every Confluent Cloud resource PIMS
-// created. Errors from individual stages are collected so one failure
-// does not leave the cloud resources (which cost money) running.
-func (p *Pipeline) Teardown(ctx context.Context, creds config.Credentials) error {
-	if !p.busy.TryLock() {
-		return ErrBusy
-	}
-	defer p.busy.Unlock()
-	if err := creds.Validate(); err != nil {
-		return err
-	}
-	p.log.Info("Tearing down the PIMS demo")
-	p.mu.Lock()
-	p.closed = true // block StartSimulation etc. while resources go away
-	p.mu.Unlock()
-	p.shutdownLocal()
-
-	var errs []error
-	p.mu.Lock()
-	secrets := p.secrets
-	p.mu.Unlock()
-	if secrets != nil {
-		if err := p.deps.StopCDC(ctx, *secrets); err != nil {
-			p.log.Warn("Could not delete Debezium connector", "error", err)
-		}
-	}
-	if err := p.deps.StopLocal(ctx, true); err != nil {
-		errs = append(errs, fmt.Errorf("stop local services: %w", err))
-	}
-	if err := p.deps.Destroy(ctx, creds); err != nil {
-		errs = append(errs, fmt.Errorf("destroy confluent cloud resources: %w", err))
-	}
-	p.mu.Lock()
-	p.outputs, p.secrets = nil, nil
-	p.closed = false
-	p.mu.Unlock()
-	p.resetSteps()
-	if err := errors.Join(errs...); err != nil {
-		return err
-	}
-	p.log.Info("Teardown complete")
-	return nil
-}
-
 // DisableTableflow turns Tableflow off, so the topics can be deleted by whoever owns them.
-// It does nothing in the desktop app. Call Close first: a setup that is still running
+// It does nothing if the dep is not set. Call Close first: a setup that is still running
 // could otherwise enable Tableflow again after this has disabled it.
 func (p *Pipeline) DisableTableflow(ctx context.Context) error {
 	if p.deps.DisableTableflow == nil {
@@ -571,9 +518,8 @@ func (p *Pipeline) shutdownLocal() {
 	}
 }
 
-// Close stops background work without deleting anything, so the demo can
-// be resumed on the next launch. A Setup still in progress will not start
-// anything new after Close.
+// Close stops background work. It deletes nothing. A Setup still in progress
+// will not start anything new after Close.
 func (p *Pipeline) Close() {
 	p.mu.Lock()
 	p.closed = true

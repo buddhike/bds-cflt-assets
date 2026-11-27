@@ -1,5 +1,6 @@
 // Package retry provides a small exponential-backoff helper shared by all
-// PIMS clients (Terraform, Docker, Kafka Connect, MySQL and DuckDB).
+// PIMS clients (Kafka Connect, Schema Registry, the Tableflow and Metrics APIs, MySQL
+// and DuckDB).
 package retry
 
 import (

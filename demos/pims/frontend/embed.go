@@ -1,5 +1,4 @@
-// Package frontend holds the built React app, for the server binary. The desktop
-// app embeds the same directory from its own main package.
+// Package frontend holds the built React app, for the server binary.
 package frontend
 
 import "embed"

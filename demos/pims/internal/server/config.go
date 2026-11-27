@@ -1,7 +1,6 @@
 // Package server runs PIMS as a web service, for the ECS task Launchpad deploys:
-// the same setup, simulator and charts as the desktop app, with a browser as the
-// window. Terraform provisions what the desktop app provisions itself, and hands
-// the result over in environment variables.
+// setup, simulator and charts, with a browser as the window. Terraform provisions
+// the Confluent Cloud resources and hands the result over in environment variables.
 package server
 
 import (
@@ -29,7 +28,7 @@ type Config struct {
 	// which the Metrics API needs. The demo's own service account may not call it.
 	CloudAPIKey    string
 	CloudAPISecret string
-	// Outputs is what Terraform provisioned, in the shape the desktop app reads from its own state.
+	// Outputs is what Terraform provisioned, in the shape the pipeline reads.
 	Outputs terraform.Outputs
 
 	MySQLHost             string

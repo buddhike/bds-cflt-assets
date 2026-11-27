@@ -1,5 +1,5 @@
-# Confluent Cloud: the same resources the desktop app provisions, except for
-# Tableflow. It cannot be enabled until Debezium has registered the topics' schemas,
+# Confluent Cloud: the environment, cluster, topics, service account and API keys,
+# except for Tableflow. It cannot be enabled until Debezium has registered the topics' schemas,
 # so pims-server enables it, and disables it again before a destroy.
 
 locals {

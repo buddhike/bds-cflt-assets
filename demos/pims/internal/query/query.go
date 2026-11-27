@@ -152,7 +152,7 @@ type Result struct {
 }
 
 // Execer runs a program in the DuckDB container with stdin attached.
-// compose.Project satisfies it.
+// duckdbagent.Client satisfies it.
 type Execer interface {
 	ExecLimit(ctx context.Context, service string, stdin io.Reader, redact []string, maxStdout int, cmd ...string) ([]byte, error)
 }

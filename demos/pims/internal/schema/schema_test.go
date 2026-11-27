@@ -47,7 +47,7 @@ func TestDSNIsUTCAndHidesPasswordFromLogs(t *testing.T) {
 }
 
 // TestInstallAgainstMySQL runs the installer twice against a real MySQL,
-// for example the one from `docker compose`, to prove it is idempotent and
+// for example one run with `docker run` (see docs/CONTRIBUTING.md), to prove it is idempotent and
 // that the same-day rule is enforced. Set PIMS_TEST_MYSQL_ROOT_PASSWORD and
 // optionally PIMS_TEST_MYSQL_PORT (default 33306).
 func TestInstallAgainstMySQL(t *testing.T) {

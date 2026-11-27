@@ -1,6 +1,5 @@
 import {useCallback, useEffect, useState} from 'react';
 import {api, AppState, errorText, LatencyResult, LogEntry, Step} from './api';
-import {CredentialsForm} from './components/CredentialsForm';
 import {SimulationBar} from './components/SimulationBar';
 import {QueryPanel} from './components/QueryPanel';
 import {SidePanel, SideSection} from './components/SidePanel';
@@ -17,7 +16,6 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [latency, setLatency] = useState<LatencyResult>(NO_LATENCY);
   const [actionError, setActionError] = useState('');
-  const [confirmTeardown, setConfirmTeardown] = useState(false);
   const [side, setSide] = useState<SideSection | null>(null);
 
   const refresh = useCallback(async () => {
@@ -36,7 +34,6 @@ export default function App() {
       // Each event is the whole current reading, so it replaces the last one.
       events.onLatency(setLatency),
       events.onSetupDone((r) => { setActionError(r.error); refresh(); }),
-      events.onTeardownDone((r) => { setActionError(r.error); refresh(); }),
       // Events sent while the browser was disconnected are gone: start from the server's state again.
       events.onReconnect(refresh),
     ];
@@ -54,14 +51,11 @@ export default function App() {
   }
 
   if (!state) return <main><div className="gate"><p className="muted">Loading…</p></div></main>;
-  if (!state.hasCredentials) return <CredentialsForm onSaved={refresh}/>;
 
   const busy = state.busy;
-  const stepsStarted = state.steps.some((s) => s.status !== 'pending');
   const schemaReady = state.steps.find((s) => s.id === 'schema')?.status === 'done' || state.sim.running || state.sim.events > 0;
-  // Queries run in the DuckDB container, which setup starts, and the teardown deletes.
-  const queryReady = state.steps.find((s) => s.id === 'services')?.status === 'done' && busy !== 'teardown';
-  const managed = !!state.managed;
+  // Queries run in the DuckDB container, which setup starts.
+  const queryReady = state.steps.find((s) => s.id === 'services')?.status === 'done';
   const setupFailed = state.steps.some((s) => s.status === 'failed');
   const errorCount = logs.filter((l) => l.level.toUpperCase() === 'ERROR').length;
   const warnCount = logs.filter((l) => l.level.toUpperCase() === 'WARN').length;
@@ -74,29 +68,12 @@ export default function App() {
           title="Patient Information Management System: streaming live MySQL changes into queryable Iceberg tables with Debezium CDC and Confluent Cloud Tableflow, and showing how fresh they are"
         >
           <Logo/>
-          {managed && <>Launchpad <span className="sep">/</span></>} PIMS
+          Launchpad <span className="sep">/</span> PIMS
         </h1>
-        {busy && <span className="pill busy">{busy === 'setup' ? 'Setting up' : 'Tearing down'}…</span>}
+        {busy && <span className="pill busy">Setting up…</span>}
         <span className="spacer"/>
         <div className="who">
-          {managed ? (
-            !busy && setupFailed && <button className="primary sm" onClick={() => run(api.setup)}>Retry setup</button>
-          ) : (
-            <>
-              <button className="primary sm" disabled={!!busy} onClick={() => run(api.setup)}>
-                {stepsStarted ? 'Re-run setup' : 'Set up demo'}
-              </button>
-              {confirmTeardown ? (
-                <span className="confirm">
-                  Delete all cloud and local resources?
-                  <button className="danger sm" onClick={() => { setConfirmTeardown(false); run(api.teardown); }}>Delete everything</button>
-                  <button className="sm" onClick={() => setConfirmTeardown(false)}>Cancel</button>
-                </span>
-              ) : (
-                <button className="quiet sm" disabled={!!busy} onClick={() => setConfirmTeardown(true)}>Tear down</button>
-              )}
-            </>
-          )}
+          {!busy && setupFailed && <button className="primary sm" onClick={() => run(api.setup)}>Retry setup</button>}
         </div>
       </header>
 

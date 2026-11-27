@@ -1,5 +1,5 @@
 // Package tableflow turns Tableflow on and off for Kafka topics through the Confluent
-// Cloud API. Launchpad mode uses it: Terraform owns the topics, and the server enables
+// Cloud API. The server uses it: Terraform owns the topics, and the server enables
 // Tableflow on them once Debezium has registered their schemas, then disables it again
 // before Terraform destroys the topics.
 package tableflow

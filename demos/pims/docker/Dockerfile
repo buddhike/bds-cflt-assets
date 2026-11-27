@@ -3,8 +3,7 @@
 #   docker build -f docker/Dockerfile --target server -t pims-server .
 #   docker build -f docker/Dockerfile --target duckdb -t pims-duckdb .
 #
-# The Kafka Connect image is internal/compose/project/connect/Dockerfile, which
-# the desktop app builds too.
+# The Kafka Connect image is internal/compose/project/connect/Dockerfile.
 
 # The React app, which the server binary embeds.
 FROM node:22-alpine AS ui
@@ -29,8 +28,7 @@ EXPOSE 8080
 ENTRYPOINT ["/pims-server"]
 
 # DuckDB CLI with the extensions that read Tableflow's Iceberg tables, run by an
-# agent that lets the server execute queries here. Same as the desktop app's
-# DuckDB image (internal/compose/project/duckdb/Dockerfile), plus the agent.
+# agent that lets the server execute queries here.
 FROM debian:bookworm-slim AS duckdb
 ARG DUCKDB_VERSION=1.5.2
 ARG DUCKDB_SHA256_amd64=fc9145affabca627431e73ddaf6b8117e5c192692480c13886f227be202d5d15

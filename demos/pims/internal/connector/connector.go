@@ -54,7 +54,7 @@ type Settings struct {
 	// KafkaBootstrap is used by Debezium's schema history producer and
 	// consumer, which do not inherit the worker's connection settings.
 	KafkaBootstrap string
-	// MySQLHost and MySQLPort are as seen from inside the compose network.
+	// MySQLHost and MySQLPort are as the Connect container sees them.
 	MySQLHost string
 	MySQLPort int
 }

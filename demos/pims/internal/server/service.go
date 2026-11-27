@@ -16,7 +16,7 @@ import (
 	"pims/internal/sim"
 )
 
-// Event names sent to the browser. They are the desktop app's, so one UI serves both.
+// Event names sent to the browser. The UI listens for these names.
 const (
 	eventLog       = "log"
 	eventStep      = "step"
@@ -33,21 +33,17 @@ var shutdownWait = 20 * time.Second
 // ErrNotStarted is returned if the service is used before Start.
 var ErrNotStarted = errors.New("the service is still starting")
 
-// State is everything the UI needs after a (re)load. It has the shape of the
-// desktop app's State, with Managed set: the UI hides setup and teardown buttons
-// then, because Launchpad owns the demo's life.
+// State is everything the UI needs after a (re)load.
 type State struct {
-	Managed        bool                 `json:"managed"`
-	HasCredentials bool                 `json:"hasCredentials"`
-	AWSRegion      string               `json:"awsRegion"`
-	Busy           string               `json:"busy"`
-	LastError      string               `json:"lastError"`
-	Steps          []pipeline.StepState `json:"steps"`
-	Sim            sim.Stats            `json:"sim"`
-	Logs           []logging.Entry      `json:"logs"`
-	Latency        latency.Result       `json:"latency"`
-	Limits         map[string]float64   `json:"limits"`
-	Query          pipeline.QueryInfo   `json:"query"`
+	AWSRegion string               `json:"awsRegion"`
+	Busy      string               `json:"busy"`
+	LastError string               `json:"lastError"`
+	Steps     []pipeline.StepState `json:"steps"`
+	Sim       sim.Stats            `json:"sim"`
+	Logs      []logging.Entry      `json:"logs"`
+	Latency   latency.Result       `json:"latency"`
+	Limits    map[string]float64   `json:"limits"`
+	Query     pipeline.QueryInfo   `json:"query"`
 }
 
 // Service is the server's backend: the pipeline plus what the UI shows of it.
@@ -246,13 +242,11 @@ func (s *Service) Setup() error {
 func (s *Service) State() State {
 	s.mu.Lock()
 	st := State{
-		Managed:        true,
-		HasCredentials: true, // Launchpad supplied them
-		AWSRegion:      s.cfg.AWSRegion,
-		Busy:           s.busy,
-		LastError:      s.lastError,
-		Logs:           s.logs.items(),
-		Latency:        s.latency,
+		AWSRegion: s.cfg.AWSRegion,
+		Busy:      s.busy,
+		LastError: s.lastError,
+		Logs:      s.logs.items(),
+		Latency:   s.latency,
 	}
 	s.mu.Unlock()
 	st.Steps = s.pipe.StepStates()

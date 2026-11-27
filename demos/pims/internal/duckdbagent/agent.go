@@ -1,8 +1,8 @@
 // Package duckdbagent lets PIMS run the DuckDB CLI in another container of the
-// same ECS task, which `docker compose exec` does on a desktop.
+// same ECS task, which `docker exec` reaches.
 //
-// The agent runs in the DuckDB container. The client has the same method as
-// compose.Project.ExecLimit, so query.Runner uses either.
+// The agent runs in the DuckDB container. The client has the method
+// query.Execer asks for, so query.Runner runs its queries through it.
 //
 // The agent runs one command, the pipeline that query.Runner builds, and refuses any
 // other. What it does not do is judge the SQL on stdin: DuckDB's shell commands, such as

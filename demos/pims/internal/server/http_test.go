@@ -50,7 +50,6 @@ func fakeDeps(block chan struct{}) pipeline.Deps {
 		Provision: func(_ context.Context, _ config.Credentials, o terraform.ApplyOptions) (terraform.Outputs, error) {
 			return terraform.Outputs{KafkaClusterID: "lkc-1", Topics: []string{"patients"}, TableflowEnabled: o.EnableTableflow}, nil
 		},
-		Destroy: func(context.Context, config.Credentials) error { return ErrManaged },
 		StartLocal: func(ctx context.Context, _ terraform.Outputs) (compose.MySQLSecrets, error) {
 			if block != nil {
 				select {
@@ -61,12 +60,10 @@ func fakeDeps(block chan struct{}) pipeline.Deps {
 			}
 			return compose.MySQLSecrets{Generation: "abc123abc123"}, nil
 		},
-		StopLocal: func(context.Context, bool) error { return ErrManaged },
 		PrepareDB: func(context.Context, compose.MySQLSecrets) (sim.Store, io.Closer, error) {
 			return nopStore{}, closer{}, nil
 		},
 		StartCDC:    func(context.Context, terraform.Outputs, compose.MySQLSecrets) error { return nil },
-		StopCDC:     func(context.Context, compose.MySQLSecrets) error { return ErrManaged },
 		WaitSchemas: func(context.Context, terraform.Outputs) error { return nil },
 		NewQuerier:  func(config.Credentials, terraform.Outputs) (latency.Querier, error) { return okQuerier{}, nil },
 		RunQuery: func(_ context.Context, o terraform.Outputs, sql string) (query.Result, error) {
@@ -285,7 +282,7 @@ func TestSetupRunsOnStartAndTheUISeesIt(t *testing.T) {
 		return s
 	}
 	waitFor(t, "setup to be running", func() bool { st = get(); return st.Busy == "setup" })
-	if !st.Managed || !st.HasCredentials || st.AWSRegion != "us-east-1" {
+	if st.AWSRegion != "us-east-1" {
 		t.Errorf("state: %+v", st)
 	}
 	if st.Steps[0].Title != "Check configuration" {

@@ -36,7 +36,7 @@ locals {
     }
   } }
 
-  # Kafka Connect, configured as the desktop app's compose file does.
+  # The Kafka Connect worker. Its image is built from internal/compose/project/connect.
   connect_env = [
     { name = "CONNECT_BOOTSTRAP_SERVERS", value = local.kafka_bootstrap },
     { name = "CONNECT_GROUP_ID", value = "pims-connect" },

@@ -1,21 +1,15 @@
-// Package config holds the operator-supplied settings and the on-disk
-// workspace layout used by PIMS.
+// Package config holds the Confluent Cloud credentials the pipeline is run
+// with, and their validation.
 //
-// Confluent Cloud API secrets are kept in memory only. They are never
-// written to disk by this package. The persisted values are the last AWS
-// region used, so the setup form can be pre-filled, and the random suffix
-// that keeps this operator's Confluent Cloud resource names distinct.
+// The secret is kept in memory only and redacts itself from every format
+// that could log or send it.
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -24,11 +18,10 @@ import (
 // ap-southeast-2, including GovCloud regions.
 var awsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-gov)?-[a-z]+-[0-9]$`)
 
-// ErrInvalidCredentials is returned when operator-supplied settings fail
-// validation.
+// ErrInvalidCredentials is returned when credentials fail validation.
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
-// Credentials are the values the operator enters when PIMS launches.
+// Credentials are the Confluent Cloud values the pipeline runs with.
 type Credentials struct {
 	AWSRegion string `json:"awsRegion"`
 	APIKey    string `json:"apiKey"`
@@ -73,8 +66,7 @@ func (c Credentials) String() string {
 func (c Credentials) GoString() string { return c.String() }
 
 // MarshalJSON redacts the secret so credentials cannot leak through a
-// bound Wails method result or an error payload. Credentials are still
-// decoded from JSON normally when the setup form is submitted.
+// state or error payload. Credentials are still decoded from JSON normally.
 func (c Credentials) MarshalJSON() ([]byte, error) {
 	type redacted struct {
 		AWSRegion string `json:"awsRegion"`
@@ -99,137 +91,4 @@ func maskKey(k string) string {
 		return "****"
 	}
 	return k[:4] + "****"
-}
-
-// Workspace is the directory where PIMS keeps its working files: the
-// Terraform binary and state, and the rendered Docker Compose project.
-type Workspace struct {
-	Root string
-}
-
-// DefaultWorkspace returns the per-user workspace, for example
-// ~/Library/Application Support/pims on macOS.
-func DefaultWorkspace() (Workspace, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return Workspace{}, fmt.Errorf("resolve user config dir: %w", err)
-	}
-	return Workspace{Root: filepath.Join(dir, "pims")}, nil
-}
-
-// BinDir holds downloaded tool binaries such as terraform.
-func (w Workspace) BinDir() string { return filepath.Join(w.Root, "bin") }
-
-// TerraformDir holds the Terraform configuration and its state.
-func (w Workspace) TerraformDir() string { return filepath.Join(w.Root, "terraform") }
-
-// ComposeDir holds the Docker Compose project.
-func (w Workspace) ComposeDir() string { return filepath.Join(w.Root, "compose") }
-
-func (w Workspace) settingsPath() string { return filepath.Join(w.Root, "settings.json") }
-
-// Ensure creates the workspace directories. They are private to the
-// current user because Terraform state contains generated API secrets.
-func (w Workspace) Ensure() error {
-	for _, d := range []string{w.Root, w.BinDir(), w.TerraformDir(), w.ComposeDir()} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			return fmt.Errorf("create workspace dir %s: %w", d, err)
-		}
-		// MkdirAll leaves existing directories alone; tighten them too.
-		if err := os.Chmod(d, 0o700); err != nil {
-			return fmt.Errorf("restrict workspace dir %s: %w", d, err)
-		}
-	}
-	return nil
-}
-
-// suffixBytes is the number of random bytes behind a suffix. Each byte is
-// two hex characters, so three bytes give names such as pims-3fa9c1: enough
-// that two operators sharing a Confluent Cloud account will not collide.
-const suffixBytes = 3
-
-// suffixPattern is what a suffix may look like: lowercase letters and digits,
-// which every Confluent Cloud name accepts. It admits a hand-edited value
-// (say, an operator's initials) but not one that would break a resource name;
-// an invalid saved suffix is replaced.
-var suffixPattern = regexp.MustCompile(`^[a-z0-9]{3,12}$`)
-
-// Settings are the non-secret values remembered between launches.
-type Settings struct {
-	AWSRegion string `json:"awsRegion"`
-	// Suffix is appended to the name of the Confluent Cloud environment and
-	// service account (pims-<suffix>), so operators who share a Confluent
-	// Cloud account can each run the demo. It is created on first use and
-	// never changes afterwards.
-	Suffix string `json:"suffix,omitempty"`
-}
-
-// NewSuffix returns a fresh random resource-name suffix.
-func NewSuffix() (string, error) {
-	b := make([]byte, suffixBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate suffix: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
-// Suffix returns the persisted resource-name suffix, creating and saving one
-// when none exists yet. The workspace must already exist (see Ensure).
-func (w Workspace) Suffix() (string, error) {
-	s, err := w.LoadSettings()
-	if err != nil {
-		return "", err
-	}
-	if suffixPattern.MatchString(s.Suffix) {
-		return s.Suffix, nil
-	}
-	if s.Suffix, err = NewSuffix(); err != nil {
-		return "", err
-	}
-	if err := w.SaveSettings(s); err != nil {
-		return "", err
-	}
-	return s.Suffix, nil
-}
-
-// LoadSettings reads persisted settings. A missing file is not an error.
-func (w Workspace) LoadSettings() (Settings, error) {
-	var s Settings
-	b, err := os.ReadFile(w.settingsPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
-	if err != nil {
-		return s, fmt.Errorf("read settings: %w", err)
-	}
-	if err := json.Unmarshal(b, &s); err != nil {
-		return s, fmt.Errorf("parse settings %s: %w", w.settingsPath(), err)
-	}
-	return s, nil
-}
-
-// SaveSettings persists the non-secret settings.
-func (w Workspace) SaveSettings(s Settings) error {
-	b, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode settings: %w", err)
-	}
-	// Write to a temp file and rename so a crash never leaves a truncated
-	// settings file that would block the next launch.
-	tmp, err := os.CreateTemp(w.Root, "settings-*.json")
-	if err != nil {
-		return fmt.Errorf("create temp settings file: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op after a successful rename
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write settings: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close settings: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), w.settingsPath()); err != nil {
-		return fmt.Errorf("replace settings: %w", err)
-	}
-	return nil
 }

@@ -1,9 +1,7 @@
-# Wails build output
-build/bin
+# UI build output
 frontend/dist/*
 !frontend/dist/gitkeep
 node_modules
-frontend/package.json.md5
 
 # Local tooling / OS
 .DS_Store

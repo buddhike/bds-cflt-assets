@@ -39,7 +39,7 @@ func NewClient(baseURL, token string) (*Client, error) {
 	return &Client{base: strings.TrimRight(baseURL, "/"), token: token, http: &http.Client{}}, nil
 }
 
-// ExecLimit has the signature of compose.Project.ExecLimit, so query.Runner can use a Client.
+// ExecLimit has the signature of query.Execer, so query.Runner can use a Client.
 // service is ignored: an agent serves one container.
 func (c *Client) ExecLimit(ctx context.Context, service string, stdin io.Reader, redact []string, maxStdout int, cmd ...string) ([]byte, error) {
 	in, err := io.ReadAll(stdin)
